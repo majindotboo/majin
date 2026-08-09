@@ -11,7 +11,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use crate::MajinSet;
+use crate::{
+    ActiveSession, AssistantMessage, MajinSet, MajinStartupSet, Session, SubmitPrompt,
+    TranscriptCamera, TranscriptItem, TranscriptKind, Turn, UserMessage,
+    camera::project_transcript_parts,
+};
 
 pub struct TuiPlugin;
 
@@ -20,11 +24,12 @@ impl Plugin for TuiPlugin {
         app.add_message::<AppExit>()
             .add_message::<KeyMessage>()
             .add_message::<MouseMessage>()
-            .init_resource::<TuiView>()
+            .add_systems(Startup, spawn_tui_view.in_set(MajinStartupSet::Tui))
             .add_systems(
                 Update,
                 (handle_input, handle_mouse_input).in_set(MajinSet::Input),
             )
+            .add_systems(Update, sync_active_session.in_set(MajinSet::Project))
             .add_systems(
                 Update,
                 draw.in_set(MajinSet::Render)
@@ -33,117 +38,36 @@ impl Plugin for TuiPlugin {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum TranscriptKind {
-    User,
-    Assistant,
-    Tool,
-}
-
-pub struct TranscriptItem {
-    pub kind: TranscriptKind,
-    pub title: &'static str,
-    pub body: String,
-}
-
-#[derive(Resource)]
+#[derive(Component)]
 pub struct TuiView {
     pub composer: String,
-    pub transcript: Vec<TranscriptItem>,
-    pub scroll_from_bottom: usize,
+    pub transcript_camera: Entity,
 }
 
-impl Default for TuiView {
-    fn default() -> Self {
-        Self {
-            composer: String::new(),
-            transcript: vec![
-                TranscriptItem {
-                    kind: TranscriptKind::User,
-                    title: "YOU",
-                    body: "Show me the current project structure.".into(),
-                },
-                TranscriptItem {
-                    kind: TranscriptKind::Assistant,
-                    title: "MAJIN",
-                    body: "I will inspect the source tree first.".into(),
-                },
-                TranscriptItem {
-                    kind: TranscriptKind::Tool,
-                    title: "TOOL CALL",
-                    body: "find src/**/*".into(),
-                },
-                TranscriptItem {
-                    kind: TranscriptKind::Tool,
-                    title: "TOOL RESULT",
-                    body: "src/main.rs".into(),
-                },
-                TranscriptItem {
-                    kind: TranscriptKind::Assistant,
-                    title: "MAJIN",
-                    body: "The project currently has one application source file.".into(),
-                },
-            ],
-            scroll_from_bottom: 0,
-        }
-    }
-}
-
-impl TuiView {
-    fn handle_key(&mut self, code: KeyCode) -> bool {
-        match code {
-            KeyCode::Esc => return true,
-            KeyCode::Enter => self.submit(),
-            KeyCode::Backspace => {
-                self.composer.pop();
-            }
-            KeyCode::Char(character) => self.composer.push(character),
-            KeyCode::Up => self.scroll_up(1),
-            KeyCode::Down => self.scroll_down(1),
-            KeyCode::PageUp => self.scroll_up(10),
-            KeyCode::PageDown => self.scroll_down(10),
-            KeyCode::Home => self.scroll_from_bottom = usize::MAX,
-            KeyCode::End => self.scroll_from_bottom = 0,
-            _ => {}
-        }
-
-        false
-    }
-
-    fn scroll_up(&mut self, lines: usize) {
-        self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(lines);
-    }
-
-    fn submit(&mut self) {
-        let message = self.composer.trim();
-        if message.is_empty() {
-            return;
-        }
-
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::User,
-            title: "YOU",
-            body: message.to_owned(),
-        });
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::Assistant,
-            title: "MAJIN",
-            body: "Fake harness received the message. No agent is connected yet.".into(),
-        });
-        self.composer.clear();
-        self.scroll_from_bottom = 0;
-    }
+fn spawn_tui_view(world: &mut World) {
+    let camera = {
+        let mut cameras = world.query_filtered::<Entity, With<TranscriptCamera>>();
+        cameras.single(world).expect("one transcript camera")
+    };
+    world.spawn(TuiView {
+        composer: String::new(),
+        transcript_camera: camera,
+    });
 }
 
 fn handle_input(
     mut messages: MessageReader<KeyMessage>,
-    mut ui: ResMut<TuiView>,
+    mut views: Query<&mut TuiView>,
+    mut cameras: Query<&mut TranscriptCamera>,
+    active_session: Res<ActiveSession>,
+    sessions: Query<(), With<Session>>,
+    mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let Ok(mut ui) = views.single_mut() else {
+        return;
+    };
+
     for message in messages.read() {
         if message.kind == KeyEventKind::Release {
             continue;
@@ -154,19 +78,90 @@ fn handle_input(
         {
             continue;
         }
-        if ui.handle_key(message.code) {
-            exit.write_default();
+
+        match message.code {
+            KeyCode::Esc => {
+                exit.write_default();
+            }
+            KeyCode::Enter => {
+                let text = ui.composer.trim().to_owned();
+                if !text.is_empty() && sessions.get(active_session.0).is_ok() {
+                    commands.queue(SubmitPrompt {
+                        session: active_session.0,
+                        text,
+                    });
+                    ui.composer.clear();
+                    if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
+                        camera.scroll_from_bottom = 0;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                ui.composer.pop();
+            }
+            KeyCode::Char(character) => ui.composer.push(character),
+            KeyCode::Up => scroll_up(&mut cameras, ui.transcript_camera, 1),
+            KeyCode::Down => scroll_down(&mut cameras, ui.transcript_camera, 1),
+            KeyCode::PageUp => scroll_up(&mut cameras, ui.transcript_camera, 10),
+            KeyCode::PageDown => scroll_down(&mut cameras, ui.transcript_camera, 10),
+            KeyCode::Home => {
+                if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
+                    camera.scroll_from_bottom = usize::MAX;
+                }
+            }
+            KeyCode::End => {
+                if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
+                    camera.scroll_from_bottom = 0;
+                }
+            }
+            _ => {}
         }
     }
 }
 
-fn handle_mouse_input(mut messages: MessageReader<MouseMessage>, mut ui: ResMut<TuiView>) {
+fn handle_mouse_input(
+    mut messages: MessageReader<MouseMessage>,
+    views: Query<&TuiView>,
+    mut cameras: Query<&mut TranscriptCamera>,
+) {
+    let Ok(ui) = views.single() else {
+        return;
+    };
+
     for message in messages.read() {
         match message.kind {
-            MouseEventKind::ScrollUp => ui.scroll_up(3),
-            MouseEventKind::ScrollDown => ui.scroll_down(3),
+            MouseEventKind::ScrollUp => scroll_up(&mut cameras, ui.transcript_camera, 3),
+            MouseEventKind::ScrollDown => scroll_down(&mut cameras, ui.transcript_camera, 3),
             _ => {}
         }
+    }
+}
+
+fn scroll_up(cameras: &mut Query<&mut TranscriptCamera>, camera: Entity, lines: usize) {
+    if let Ok(mut camera) = cameras.get_mut(camera) {
+        camera.scroll_from_bottom = camera.scroll_from_bottom.saturating_add(lines);
+    }
+}
+
+fn scroll_down(cameras: &mut Query<&mut TranscriptCamera>, camera: Entity, lines: usize) {
+    if let Ok(mut camera) = cameras.get_mut(camera) {
+        camera.scroll_from_bottom = camera.scroll_from_bottom.saturating_sub(lines);
+    }
+}
+
+fn sync_active_session(
+    active_session: Res<ActiveSession>,
+    views: Query<&TuiView>,
+    mut cameras: Query<&mut TranscriptCamera>,
+) {
+    if !active_session.is_changed() {
+        return;
+    }
+    let Ok(ui) = views.single() else {
+        return;
+    };
+    if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
+        camera.session = active_session.0;
     }
 }
 
@@ -194,7 +189,22 @@ fn transcript_lines(items: &[TranscriptItem]) -> Vec<Line<'static>> {
     lines
 }
 
-fn draw(mut context: ResMut<RatatuiContext>, mut ui: ResMut<TuiView>) -> Result {
+fn draw(
+    mut context: ResMut<RatatuiContext>,
+    mut views: Query<&mut TuiView>,
+    mut cameras: Query<&mut TranscriptCamera>,
+    turns: Query<(Entity, &Turn)>,
+    users: Query<&UserMessage>,
+    assistants: Query<&AssistantMessage>,
+) -> Result {
+    let Ok(ui) = views.single_mut() else {
+        return Ok(());
+    };
+    let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) else {
+        return Ok(());
+    };
+    let items = project_transcript_parts(*camera, turns.iter(), users.iter(), assistants.iter());
+
     context.draw(|frame| {
         let areas = Layout::vertical([
             Constraint::Length(3),
@@ -218,11 +228,11 @@ fn draw(mut context: ResMut<RatatuiContext>, mut ui: ResMut<TuiView>) -> Result 
         .block(Block::default().borders(Borders::ALL));
         frame.render_widget(header, areas[0]);
 
-        let lines = transcript_lines(&ui.transcript);
+        let lines = transcript_lines(&items);
         let visible_height = usize::from(areas[1].height.saturating_sub(2));
         let max_scroll = lines.len().saturating_sub(visible_height);
-        ui.scroll_from_bottom = ui.scroll_from_bottom.min(max_scroll);
-        let scroll = max_scroll.saturating_sub(ui.scroll_from_bottom);
+        camera.scroll_from_bottom = camera.scroll_from_bottom.min(max_scroll);
+        let scroll = max_scroll.saturating_sub(camera.scroll_from_bottom);
         let transcript = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title(" Transcript "))
             .scroll((scroll as u16, 0));

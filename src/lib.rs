@@ -8,10 +8,16 @@ use std::time::Duration;
 use bevy::{app::ScheduleRunnerPlugin, prelude::*};
 use bevy_ratatui::RatatuiPlugins;
 
-pub use camera::CameraPlugin;
-pub use harness::HarnessPlugin;
+pub use camera::{
+    CameraPlugin, TranscriptCamera, TranscriptItem, TranscriptKind, project_transcript,
+};
+pub use harness::{
+    ActiveSession, Agent, AgentTool, AssistantMessage, HarnessPlugin, MessageId, Model, Provider,
+    ProviderId, SelectSession, Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, ToolId,
+    Turn, TurnId, UserMessage,
+};
 pub use persistence::PersistencePlugin;
-pub use tui::{TranscriptItem, TranscriptKind, TuiPlugin, TuiView};
+pub use tui::{TuiPlugin, TuiView};
 
 pub fn run() {
     App::new()
@@ -39,10 +45,26 @@ pub enum MajinSet {
     Render,
 }
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum MajinStartupSet {
+    Harness,
+    Camera,
+    Tui,
+}
+
 pub struct MajinPlugin;
 
 impl Plugin for MajinPlugin {
     fn build(&self, app: &mut App) {
+        app.configure_sets(
+            Startup,
+            (
+                MajinStartupSet::Harness,
+                MajinStartupSet::Camera,
+                MajinStartupSet::Tui,
+            )
+                .chain(),
+        );
         app.configure_sets(
             Update,
             (
