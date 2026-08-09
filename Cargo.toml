@@ -1,0 +1,10 @@
+[package]
+name = "majin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = ["std", "async_executor"] }
+bevy_ratatui = { path = "vendor/bevy_ratatui" }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
