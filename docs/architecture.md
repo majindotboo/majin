@@ -45,7 +45,7 @@ Transcript is not an entity type.
 
 ## Commands and schedule
 
-TUI and future SDK clients submit typed Bevy `Command` values.
+TUI systems submit typed Bevy `Command` values.
 Commands such as `SubmitPrompt` and `InterruptTurn` own validation and World mutation.
 TUI systems do not directly spawn or mutate harness domain entities.
 
@@ -113,7 +113,7 @@ Agent context camera instances can persist when they are domain state.
 
 Entity relationships persist inside the scoped snapshot.
 Bevy remaps Entity links during hydration.
-Stable IDs identify durable roots and correlated facts that cross snapshot or SDK boundaries.
+Stable IDs identify durable roots and correlated facts that cross snapshot boundaries.
 
 Persistent changes mark the snapshot dirty.
 Persistence writes a debounced atomic snapshot.
@@ -122,7 +122,6 @@ The TUI renders a loading state before that gate opens.
 
 The internal snapshot format can break during early development.
 No migration contract exists yet.
-SDK export is a separate versioned format and contains no Bevy Entity values or Rust type paths.
 
 ## Failures
 

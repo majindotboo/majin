@@ -38,7 +38,6 @@ Provider and tool implementations remain fake but use the same capability, comma
 - Real filesystem or shell tools.
 - Tool approval policy or sandboxing.
 - Save migrations before the first stable format.
-- SDK crate or SDK export implementation.
 - Multi-agent orchestration.
 - Camera caching.
 - Compaction algorithms beyond representing compaction as a timeline fact.
