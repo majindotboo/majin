@@ -5,8 +5,9 @@ use bevy::{
 use bevy_ratatui::event::{KeyMessage, MouseMessage};
 use majin::{
     ActiveSession, Agent, AgentTool, AssistantMessage, MajinPlugin, MessageId, Model, Provider,
-    SelectSession, Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, TranscriptCamera,
-    TranscriptKind, TuiView, Turn, TurnId, UserMessage, project_transcript,
+    SelectSession, Sequence, Session, SessionId, SubmitPrompt, TerminalTranscriptViewport,
+    ToolDefinition, TranscriptCamera, TranscriptItem, TuiView, Turn, TurnId, UserMessage,
+    project_transcript,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
@@ -105,10 +106,15 @@ fn composer_queues_prompt_into_world_facts() {
 
     let camera = app.world().get::<TuiView>(view).unwrap().transcript_camera;
     let transcript = project_transcript(app.world_mut(), camera);
-    assert_eq!(transcript.len(), 2);
-    assert_eq!(transcript[0].kind, TranscriptKind::User);
-    assert_eq!(transcript[0].body, "quit");
-    assert_eq!(transcript[1].kind, TranscriptKind::Assistant);
+    assert_eq!(
+        transcript,
+        [
+            TranscriptItem::User("quit".into()),
+            TranscriptItem::Assistant(
+                "Fake harness received the message. No agent is connected yet.".into()
+            )
+        ]
+    );
 }
 
 #[test]
@@ -205,11 +211,11 @@ fn transcript_projection_sorts_facts_by_sequence_and_id() {
     let transcript = project_transcript(app.world_mut(), camera);
 
     assert_eq!(
-        transcript
-            .iter()
-            .map(|item| item.body.as_str())
-            .collect::<Vec<_>>(),
-        ["first", "second"]
+        transcript,
+        [
+            TranscriptItem::User("first".into()),
+            TranscriptItem::Assistant("second".into())
+        ]
     );
 }
 
@@ -236,7 +242,7 @@ fn selecting_session_updates_active_transcript_camera() {
 }
 
 #[test]
-fn mouse_scroll_moves_transcript_camera() {
+fn mouse_scroll_moves_terminal_viewport() {
     let mut app = test_app();
     let camera = single_entity::<TranscriptCamera>(&mut app);
 
@@ -249,14 +255,14 @@ fn mouse_scroll_moves_transcript_camera() {
     app.update();
     assert_eq!(
         app.world()
-            .get::<TranscriptCamera>(camera)
+            .get::<TerminalTranscriptViewport>(camera)
             .unwrap()
             .scroll_from_bottom,
         3
     );
 
     app.world_mut()
-        .get_mut::<TranscriptCamera>(camera)
+        .get_mut::<TerminalTranscriptViewport>(camera)
         .unwrap()
         .scroll_from_bottom = 3;
     app.world_mut().write_message(MouseMessage(MouseEvent {
@@ -268,7 +274,7 @@ fn mouse_scroll_moves_transcript_camera() {
     app.update();
     assert_eq!(
         app.world()
-            .get::<TranscriptCamera>(camera)
+            .get::<TerminalTranscriptViewport>(camera)
             .unwrap()
             .scroll_from_bottom,
         0

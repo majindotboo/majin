@@ -12,9 +12,8 @@ use ratatui::{
 };
 
 use crate::{
-    ActiveSession, AssistantMessage, MajinSet, MajinStartupSet, Session, SubmitPrompt,
-    TranscriptCamera, TranscriptItem, TranscriptKind, Turn, UserMessage,
-    camera::project_transcript_parts,
+    ActiveSession, MajinSet, MajinStartupSet, Session, SubmitPrompt, TranscriptCamera,
+    TranscriptItem, TranscriptProjection,
 };
 
 pub struct TuiPlugin;
@@ -44,11 +43,19 @@ pub struct TuiView {
     pub transcript_camera: Entity,
 }
 
+#[derive(Component, Default)]
+pub struct TerminalTranscriptViewport {
+    pub scroll_from_bottom: usize,
+}
+
 fn spawn_tui_view(world: &mut World) {
-    let camera = {
-        let mut cameras = world.query_filtered::<Entity, With<TranscriptCamera>>();
-        cameras.single(world).expect("one transcript camera")
-    };
+    let session = world.resource::<ActiveSession>().0;
+    let camera = world
+        .spawn((
+            TranscriptCamera { session },
+            TerminalTranscriptViewport::default(),
+        ))
+        .id();
     world.spawn(TuiView {
         composer: String::new(),
         transcript_camera: camera,
@@ -58,7 +65,7 @@ fn spawn_tui_view(world: &mut World) {
 fn handle_input(
     mut messages: MessageReader<KeyMessage>,
     mut views: Query<&mut TuiView>,
-    mut cameras: Query<&mut TranscriptCamera>,
+    mut viewports: Query<&mut TerminalTranscriptViewport>,
     active_session: Res<ActiveSession>,
     sessions: Query<(), With<Session>>,
     mut commands: Commands,
@@ -91,8 +98,8 @@ fn handle_input(
                         text,
                     });
                     ui.composer.clear();
-                    if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
-                        camera.scroll_from_bottom = 0;
+                    if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
+                        viewport.scroll_from_bottom = 0;
                     }
                 }
             }
@@ -100,18 +107,18 @@ fn handle_input(
                 ui.composer.pop();
             }
             KeyCode::Char(character) => ui.composer.push(character),
-            KeyCode::Up => scroll_up(&mut cameras, ui.transcript_camera, 1),
-            KeyCode::Down => scroll_down(&mut cameras, ui.transcript_camera, 1),
-            KeyCode::PageUp => scroll_up(&mut cameras, ui.transcript_camera, 10),
-            KeyCode::PageDown => scroll_down(&mut cameras, ui.transcript_camera, 10),
+            KeyCode::Up => scroll_up(&mut viewports, ui.transcript_camera, 1),
+            KeyCode::Down => scroll_down(&mut viewports, ui.transcript_camera, 1),
+            KeyCode::PageUp => scroll_up(&mut viewports, ui.transcript_camera, 10),
+            KeyCode::PageDown => scroll_down(&mut viewports, ui.transcript_camera, 10),
             KeyCode::Home => {
-                if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
-                    camera.scroll_from_bottom = usize::MAX;
+                if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
+                    viewport.scroll_from_bottom = usize::MAX;
                 }
             }
             KeyCode::End => {
-                if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
-                    camera.scroll_from_bottom = 0;
+                if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
+                    viewport.scroll_from_bottom = 0;
                 }
             }
             _ => {}
@@ -122,7 +129,7 @@ fn handle_input(
 fn handle_mouse_input(
     mut messages: MessageReader<MouseMessage>,
     views: Query<&TuiView>,
-    mut cameras: Query<&mut TranscriptCamera>,
+    mut viewports: Query<&mut TerminalTranscriptViewport>,
 ) {
     let Ok(ui) = views.single() else {
         return;
@@ -130,22 +137,26 @@ fn handle_mouse_input(
 
     for message in messages.read() {
         match message.kind {
-            MouseEventKind::ScrollUp => scroll_up(&mut cameras, ui.transcript_camera, 3),
-            MouseEventKind::ScrollDown => scroll_down(&mut cameras, ui.transcript_camera, 3),
+            MouseEventKind::ScrollUp => scroll_up(&mut viewports, ui.transcript_camera, 3),
+            MouseEventKind::ScrollDown => scroll_down(&mut viewports, ui.transcript_camera, 3),
             _ => {}
         }
     }
 }
 
-fn scroll_up(cameras: &mut Query<&mut TranscriptCamera>, camera: Entity, lines: usize) {
-    if let Ok(mut camera) = cameras.get_mut(camera) {
-        camera.scroll_from_bottom = camera.scroll_from_bottom.saturating_add(lines);
+fn scroll_up(viewports: &mut Query<&mut TerminalTranscriptViewport>, camera: Entity, lines: usize) {
+    if let Ok(mut viewport) = viewports.get_mut(camera) {
+        viewport.scroll_from_bottom = viewport.scroll_from_bottom.saturating_add(lines);
     }
 }
 
-fn scroll_down(cameras: &mut Query<&mut TranscriptCamera>, camera: Entity, lines: usize) {
-    if let Ok(mut camera) = cameras.get_mut(camera) {
-        camera.scroll_from_bottom = camera.scroll_from_bottom.saturating_sub(lines);
+fn scroll_down(
+    viewports: &mut Query<&mut TerminalTranscriptViewport>,
+    camera: Entity,
+    lines: usize,
+) {
+    if let Ok(mut viewport) = viewports.get_mut(camera) {
+        viewport.scroll_from_bottom = viewport.scroll_from_bottom.saturating_sub(lines);
     }
 }
 
@@ -169,20 +180,15 @@ fn transcript_lines(items: &[TranscriptItem]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     for item in items {
-        let color = match item.kind {
-            TranscriptKind::User => Color::Cyan,
-            TranscriptKind::Assistant => Color::Green,
-            TranscriptKind::Tool => Color::Yellow,
+        let (title, color, body) = match item {
+            TranscriptItem::User(body) => ("YOU", Color::Cyan, body),
+            TranscriptItem::Assistant(body) => ("MAJIN", Color::Green, body),
         };
         lines.push(Line::from(Span::styled(
-            format!(" {} ", item.title),
+            format!(" {title} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )));
-        lines.extend(
-            item.body
-                .lines()
-                .map(|line| Line::from(format!("  {line}"))),
-        );
+        lines.extend(body.lines().map(|line| Line::from(format!("  {line}"))));
         lines.push(Line::default());
     }
 
@@ -192,18 +198,16 @@ fn transcript_lines(items: &[TranscriptItem]) -> Vec<Line<'static>> {
 fn draw(
     mut context: ResMut<RatatuiContext>,
     mut views: Query<&mut TuiView>,
-    mut cameras: Query<&mut TranscriptCamera>,
-    turns: Query<(Entity, &Turn)>,
-    users: Query<&UserMessage>,
-    assistants: Query<&AssistantMessage>,
+    mut cameras: Query<(&TranscriptCamera, &mut TerminalTranscriptViewport)>,
+    projection: TranscriptProjection,
 ) -> Result {
     let Ok(ui) = views.single_mut() else {
         return Ok(());
     };
-    let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) else {
+    let Ok((camera, mut viewport)) = cameras.get_mut(ui.transcript_camera) else {
         return Ok(());
     };
-    let items = project_transcript_parts(*camera, turns.iter(), users.iter(), assistants.iter());
+    let items = projection.project(camera);
 
     context.draw(|frame| {
         let areas = Layout::vertical([
@@ -231,8 +235,8 @@ fn draw(
         let lines = transcript_lines(&items);
         let visible_height = usize::from(areas[1].height.saturating_sub(2));
         let max_scroll = lines.len().saturating_sub(visible_height);
-        camera.scroll_from_bottom = camera.scroll_from_bottom.min(max_scroll);
-        let scroll = max_scroll.saturating_sub(camera.scroll_from_bottom);
+        viewport.scroll_from_bottom = viewport.scroll_from_bottom.min(max_scroll);
+        let scroll = max_scroll.saturating_sub(viewport.scroll_from_bottom);
         let transcript = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title(" Transcript "))
             .scroll((scroll as u16, 0));
