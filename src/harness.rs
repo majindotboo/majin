@@ -97,6 +97,27 @@ pub struct BranchSelection {
     pub sequence: Sequence,
 }
 
+#[derive(Component, Debug, Clone)]
+pub struct ModelChange {
+    pub turn: Entity,
+    pub model: Entity,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct Compaction {
+    pub turn: Entity,
+    pub summary: String,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct Recovery {
+    pub turn: Entity,
+    pub text: String,
+    pub sequence: Sequence,
+}
+
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ActiveSession(pub Entity);
 
