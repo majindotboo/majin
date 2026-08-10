@@ -20,7 +20,7 @@ Resources hold true singletons.
 Ratatui stores no application state.
 
 A `TuiView` entity owns composer and focus state.
-Camera entities own viewport state.
+Camera entities own selection and viewport state through type-specific components.
 An `ActiveSession` resource identifies the selected Session.
 
 ## Domain model

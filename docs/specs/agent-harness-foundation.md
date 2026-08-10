@@ -158,7 +158,8 @@ Late results with an old generation are rejected.
 Use conceptual camera entities with type-specific components:
 
 ```rust
-TranscriptCamera { session: Entity, head: Entity, scroll_from_bottom: usize }
+TranscriptCamera { session: Entity, head: Entity }
+TerminalTranscriptViewport { scroll_from_bottom: usize }
 ContextCamera { agent: Entity, session: Entity, head: Entity, budget: usize }
 ```
 
@@ -253,7 +254,7 @@ Keep composer and focus as view state.
 Keep `ActiveSession` as a singleton resource.
 
 Message submission queues `SubmitPrompt`.
-Mouse and keyboard scrolling mutate only the terminal TranscriptCamera.
+Mouse and keyboard scrolling mutate only the terminal viewport component on the TranscriptCamera entity.
 Session and branch selection queue typed commands.
 Ratatui renders temporary transcript rows returned by the camera projection.
 
