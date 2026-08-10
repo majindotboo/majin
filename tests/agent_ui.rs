@@ -6,7 +6,7 @@ use bevy_ratatui::event::{KeyMessage, MouseMessage};
 use majin::{
     ActiveSession, Agent, AgentTool, AssistantMessage, MajinPlugin, MessageId, Model, Provider,
     SelectSession, Sequence, Session, SessionId, SubmitPrompt, TerminalTranscriptViewport,
-    ToolDefinition, TranscriptCamera, TranscriptItem, TuiView, Turn, TurnId, UserMessage,
+    ToolDefinition, TranscriptCamera, TranscriptRow, TuiView, Turn, TurnId, UserMessage,
     project_transcript,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -109,8 +109,8 @@ fn composer_queues_prompt_into_world_facts() {
     assert_eq!(
         transcript,
         [
-            TranscriptItem::User("quit".into()),
-            TranscriptItem::Assistant(
+            TranscriptRow::User("quit".into()),
+            TranscriptRow::Assistant(
                 "Fake harness received the message. No agent is connected yet.".into()
             )
         ]
@@ -213,8 +213,8 @@ fn transcript_projection_sorts_facts_by_sequence_and_id() {
     assert_eq!(
         transcript,
         [
-            TranscriptItem::User("first".into()),
-            TranscriptItem::Assistant("second".into())
+            TranscriptRow::User("first".into()),
+            TranscriptRow::Assistant("second".into())
         ]
     );
 }

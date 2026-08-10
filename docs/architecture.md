@@ -20,7 +20,7 @@ Resources hold true singletons.
 Ratatui stores no application state.
 
 A `TuiView` entity owns composer and focus state.
-Camera entities own selection and attach consumer-specific viewport components.
+Camera entities own selection and viewport state through type-specific components.
 An `ActiveSession` resource identifies the selected Session.
 
 ## Domain model
@@ -81,7 +81,6 @@ Majin cameras are conceptual.
 They do not use Bevy spatial camera types.
 
 Camera instances are entities with type-specific components such as TranscriptCamera and ContextCamera.
-Consumer adapters attach their own viewport components to camera entities.
 CameraPlugin registers projection systems and pure helpers for each camera type.
 There are no CameraDefinition entities.
 

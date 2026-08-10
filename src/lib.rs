@@ -8,9 +8,7 @@ use std::time::Duration;
 use bevy::{app::ScheduleRunnerPlugin, prelude::*};
 use bevy_ratatui::RatatuiPlugins;
 
-pub use camera::{
-    CameraPlugin, TranscriptCamera, TranscriptItem, TranscriptProjection, project_transcript,
-};
+pub use camera::{CameraPlugin, TranscriptCamera, TranscriptRow, project_transcript};
 pub use harness::{
     ActiveSession, Agent, AgentTool, AssistantMessage, HarnessPlugin, MessageId, Model, Provider,
     ProviderId, SelectSession, Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, ToolId,

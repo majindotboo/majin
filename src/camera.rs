@@ -16,20 +16,20 @@ pub struct TranscriptCamera {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TranscriptItem {
+pub enum TranscriptRow {
     User(String),
     Assistant(String),
 }
 
 #[derive(SystemParam)]
-pub struct TranscriptProjection<'w, 's> {
+pub(crate) struct TranscriptProjector<'w, 's> {
     turns: Query<'w, 's, (Entity, &'static Turn)>,
     users: Query<'w, 's, &'static UserMessage>,
     assistants: Query<'w, 's, &'static AssistantMessage>,
 }
 
-impl TranscriptProjection<'_, '_> {
-    pub fn project(&self, camera: &TranscriptCamera) -> Vec<TranscriptItem> {
+impl TranscriptProjector<'_, '_> {
+    pub(crate) fn project(&self, camera: &TranscriptCamera) -> Vec<TranscriptRow> {
         project_transcript_parts(
             *camera,
             self.turns.iter(),
@@ -39,7 +39,7 @@ impl TranscriptProjection<'_, '_> {
     }
 }
 
-pub fn project_transcript(world: &mut World, camera: Entity) -> Vec<TranscriptItem> {
+pub fn project_transcript(world: &mut World, camera: Entity) -> Vec<TranscriptRow> {
     let camera = *world
         .get::<TranscriptCamera>(camera)
         .expect("transcript camera entity");
@@ -60,7 +60,7 @@ fn project_transcript_parts<'a>(
     turns: impl Iterator<Item = (Entity, &'a Turn)>,
     users: impl Iterator<Item = &'a UserMessage>,
     assistants: impl Iterator<Item = &'a AssistantMessage>,
-) -> Vec<TranscriptItem> {
+) -> Vec<TranscriptRow> {
     let session_turns: HashSet<_> = turns
         .filter_map(|(entity, turn)| (turn.session == camera.session).then_some(entity))
         .collect();
@@ -70,14 +70,14 @@ fn project_transcript_parts<'a>(
         session_turns.contains(&message.turn).then_some((
             message.sequence,
             message.id,
-            TranscriptItem::User(message.text.clone()),
+            TranscriptRow::User(message.text.clone()),
         ))
     }));
     items.extend(assistants.filter_map(|message| {
         session_turns.contains(&message.turn).then_some((
             message.sequence,
             message.id,
-            TranscriptItem::Assistant(message.text.clone()),
+            TranscriptRow::Assistant(message.text.clone()),
         ))
     }));
     items.sort_by_key(|(Sequence(sequence), MessageId(id), _)| (*sequence, *id));

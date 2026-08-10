@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::{
     ActiveSession, MajinSet, MajinStartupSet, Session, SubmitPrompt, TranscriptCamera,
-    TranscriptItem, TranscriptProjection,
+    TranscriptRow, camera::TranscriptProjector,
 };
 
 pub struct TuiPlugin;
@@ -176,13 +176,13 @@ fn sync_active_session(
     }
 }
 
-fn transcript_lines(items: &[TranscriptItem]) -> Vec<Line<'static>> {
+fn transcript_lines(items: &[TranscriptRow]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     for item in items {
         let (title, color, body) = match item {
-            TranscriptItem::User(body) => ("YOU", Color::Cyan, body),
-            TranscriptItem::Assistant(body) => ("MAJIN", Color::Green, body),
+            TranscriptRow::User(body) => ("YOU", Color::Cyan, body),
+            TranscriptRow::Assistant(body) => ("MAJIN", Color::Green, body),
         };
         lines.push(Line::from(Span::styled(
             format!(" {title} "),
@@ -199,7 +199,7 @@ fn draw(
     mut context: ResMut<RatatuiContext>,
     mut views: Query<&mut TuiView>,
     mut cameras: Query<(&TranscriptCamera, &mut TerminalTranscriptViewport)>,
-    projection: TranscriptProjection,
+    projector: TranscriptProjector,
 ) -> Result {
     let Ok(ui) = views.single_mut() else {
         return Ok(());
@@ -207,7 +207,7 @@ fn draw(
     let Ok((camera, mut viewport)) = cameras.get_mut(ui.transcript_camera) else {
         return Ok(());
     };
-    let items = projection.project(camera);
+    let items = projector.project(camera);
 
     context.draw(|frame| {
         let areas = Layout::vertical([

@@ -169,8 +169,6 @@ Persist ContextCamera only when it is Agent domain state.
 
 Transcript projection walks the selected Turn parent chain, gathers visible facts, sorts facts within each Turn, and returns temporary transcript rows.
 TUI render calls this projection directly.
-Projection output carries semantic roles and content.
-Consumer adapters add labels, styles, and viewport behavior.
 
 Context projection walks the selected branch and returns an ordered provider-neutral `ContextDocument`.
 Provider adapters convert the document into native requests.
