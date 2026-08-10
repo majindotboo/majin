@@ -90,6 +90,13 @@ pub struct AssistantMessage {
     pub text: String,
 }
 
+#[derive(Component, Debug, Clone)]
+pub struct BranchSelection {
+    pub session: Entity,
+    pub head: Entity,
+    pub sequence: Sequence,
+}
+
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ActiveSession(pub Entity);
 
@@ -199,6 +206,35 @@ impl Command for SelectSession {
         if world.get::<Session>(self.session).is_some() {
             world.insert_resource(ActiveSession(self.session));
         }
+    }
+}
+
+pub struct SelectBranch {
+    pub session: Entity,
+    pub head: Entity,
+}
+
+impl Command for SelectBranch {
+    type Out = ();
+
+    fn apply(self, world: &mut World) {
+        let Some(turn) = world.get::<Turn>(self.head) else {
+            return;
+        };
+        if turn.session != self.session || world.get::<Session>(self.session).is_none() {
+            return;
+        }
+
+        let sequence = world.resource_mut::<HarnessIds>().sequence();
+        world
+            .get_mut::<Session>(self.session)
+            .expect("validated session")
+            .active_head = Some(self.head);
+        world.spawn(BranchSelection {
+            session: self.session,
+            head: self.head,
+            sequence,
+        });
     }
 }
 

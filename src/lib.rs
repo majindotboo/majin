@@ -10,9 +10,9 @@ use bevy_ratatui::RatatuiPlugins;
 
 pub use camera::{CameraPlugin, TranscriptCamera, TranscriptRow, project_transcript};
 pub use harness::{
-    ActiveSession, Agent, AgentTool, AssistantMessage, HarnessPlugin, MessageId, Model, Provider,
-    ProviderId, SelectSession, Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, ToolId,
-    Turn, TurnId, UserMessage,
+    ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection, HarnessPlugin, MessageId,
+    Model, Provider, ProviderId, SelectBranch, SelectSession, Sequence, Session, SessionId,
+    SubmitPrompt, ToolDefinition, ToolId, Turn, TurnId, UserMessage,
 };
 pub use persistence::PersistencePlugin;
 pub use tui::{TerminalTranscriptViewport, TuiPlugin, TuiView};
