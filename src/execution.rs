@@ -10,10 +10,10 @@ use crate::harness::HarnessIds;
 use crate::{
     Agent, AgentTool, AssistantMessage, ContextCamera, ContextDocument, ContextEntry, MajinSet,
     MajinStartupSet, Model, ModelApi, ModelOutput, ModelReply, ModelRequest, ModelRequestId,
-    ModelResponse, ModelResult, ModelStopReason, ModelUsage, ProjectionError, Provider,
-    ProviderFailure, ProviderId, Sequence, Session, SessionId, ToolDefinition, ToolFailure, ToolId,
-    ToolOutcome, ToolResult, ToolUse, Turn, TurnCancelled, TurnCompleted, TurnFailed, TurnFailure,
-    WorkStatus, project_context_for,
+    ModelResponse, ModelResult, ModelStopReason, ModelUsage, PersistentContextCamera,
+    ProjectionError, Provider, ProviderFailure, ProviderId, Sequence, ToolDefinition, ToolFailure,
+    ToolId, ToolOutcome, ToolResult, ToolUse, Turn, TurnCancelled, TurnCompleted, TurnFailed,
+    TurnFailure, TurnInterrupted, WorkStatus, project_context_for,
 };
 
 pub(crate) fn configure(app: &mut App) {
@@ -21,7 +21,7 @@ pub(crate) fn configure(app: &mut App) {
         .add_message::<ToolResult>()
         .add_systems(
             Startup,
-            register_fake_harness.in_set(MajinStartupSet::Harness),
+            register_fake_capabilities.in_set(MajinStartupSet::Harness),
         )
         .add_systems(
             Update,
@@ -557,13 +557,35 @@ fn provider_executor(world: &World, request: &ModelRequest) -> Option<ProviderEx
     world.get::<ProviderExecutor>(request.provider).copied()
 }
 
+pub(crate) fn sync_persistent_context_camera(
+    world: &mut World,
+    agent: Entity,
+    session: Entity,
+    head: Option<Entity>,
+) {
+    let cameras: Vec<_> = world
+        .query::<(Entity, &ContextCamera, &PersistentContextCamera)>()
+        .iter(world)
+        .filter(|(_, camera, _)| camera.agent == agent && camera.session == session)
+        .map(|(entity, _, _)| entity)
+        .collect();
+    for camera in cameras {
+        world
+            .get_mut::<ContextCamera>(camera)
+            .expect("context camera")
+            .head = head;
+    }
+}
+
 fn turn_finished(world: &mut World, turn: Entity) -> bool {
     let mut completed = world.query::<&TurnCompleted>();
     let mut cancelled = world.query::<&TurnCancelled>();
     let mut failed = world.query::<&TurnFailed>();
+    let mut interrupted = world.query::<&TurnInterrupted>();
     completed.iter(world).any(|outcome| outcome.turn == turn)
         || cancelled.iter(world).any(|outcome| outcome.turn == turn)
         || failed.iter(world).any(|outcome| outcome.turn == turn)
+        || interrupted.iter(world).any(|outcome| outcome.turn == turn)
 }
 
 fn fail_request(world: &mut World, work: Entity, request: &ModelRequest, failure: ProviderFailure) {
@@ -675,44 +697,113 @@ fn fake_tool(input: ToolInput) -> Task<Result<String, ToolFailure>> {
         .spawn(async move { Ok(format!("Fake tool completed: {}", input.input)) })
 }
 
-fn register_fake_harness(world: &mut World) {
-    let provider = world
-        .spawn((
-            Provider {
+fn register_fake_capabilities(world: &mut World) {
+    reconcile_fake_capabilities(world);
+}
+
+pub(crate) fn reconcile_fake_capabilities(world: &mut World) -> Entity {
+    let provider = find_provider(world).unwrap_or_else(|| {
+        world
+            .spawn(Provider {
                 provider_id: ProviderId(1),
-            },
-            ProviderExecutor(fake_provider),
-        ))
-        .id();
-    let model = world
-        .spawn(Model {
-            provider,
-            model_id: "fake-model".into(),
-        })
-        .id();
-    let tool = world
-        .spawn((
-            ToolDefinition {
+            })
+            .id()
+    });
+    world.entity_mut(provider).insert((
+        Provider {
+            provider_id: ProviderId(1),
+        },
+        ProviderExecutor(fake_provider),
+    ));
+
+    let model = find_model(world, provider).unwrap_or_else(|| {
+        world
+            .spawn(Model {
+                provider,
+                model_id: "fake-model".into(),
+            })
+            .id()
+    });
+    world.entity_mut(model).insert(Model {
+        provider,
+        model_id: "fake-model".into(),
+    });
+
+    let tool = find_tool(world).unwrap_or_else(|| {
+        world
+            .spawn(ToolDefinition {
                 tool_id: ToolId(1),
                 name: "fake_tool".into(),
                 description: "Temporary fake tool capability.".into(),
-            },
-            ToolExecutor(fake_tool),
-        ))
-        .id();
-    let agent = world.spawn(Agent { model }).id();
-    world.spawn(AgentTool {
+            })
+            .id()
+    });
+    world.entity_mut(tool).insert((
+        ToolDefinition {
+            tool_id: ToolId(1),
+            name: "fake_tool".into(),
+            description: "Temporary fake tool capability.".into(),
+        },
+        ToolExecutor(fake_tool),
+    ));
+
+    let agent = find_agent(world, model).unwrap_or_else(|| world.spawn(Agent { model }).id());
+    world.entity_mut(agent).insert(Agent { model });
+
+    let exposure = world
+        .query::<(Entity, &AgentTool)>()
+        .iter(world)
+        .find(|(_, exposure)| exposure.agent == agent && exposure.tool == tool)
+        .map(|(entity, _)| entity)
+        .unwrap_or_else(|| {
+            world
+                .spawn(AgentTool {
+                    agent,
+                    tool,
+                    order: 0,
+                })
+                .id()
+        });
+    world.entity_mut(exposure).insert(AgentTool {
         agent,
         tool,
         order: 0,
     });
-    let session = world
-        .spawn(Session {
-            id: SessionId(1),
-            active_head: None,
-        })
-        .id();
-    world.insert_resource(crate::ActiveAgent(agent));
-    world.insert_resource(crate::ActiveSession(session));
-    world.insert_resource(HarnessIds::default());
+    agent
+}
+
+fn find_provider(world: &mut World) -> Option<Entity> {
+    world
+        .query::<(Entity, &Provider)>()
+        .iter(world)
+        .filter(|(_, provider)| provider.provider_id == ProviderId(1))
+        .map(|(entity, _)| entity)
+        .min_by_key(|entity| entity.to_bits())
+}
+
+fn find_model(world: &mut World, provider: Entity) -> Option<Entity> {
+    world
+        .query::<(Entity, &Model)>()
+        .iter(world)
+        .filter(|(_, model)| model.provider == provider)
+        .map(|(entity, _)| entity)
+        .min_by_key(|entity| entity.to_bits())
+}
+
+fn find_tool(world: &mut World) -> Option<Entity> {
+    world
+        .query::<(Entity, &ToolDefinition)>()
+        .iter(world)
+        .filter(|(_, tool)| tool.tool_id == ToolId(1))
+        .map(|(entity, _)| entity)
+        .min_by_key(|entity| entity.to_bits())
+}
+
+fn find_agent(world: &mut World, model: Entity) -> Option<Entity> {
+    world
+        .query::<(Entity, &Agent)>()
+        .iter(world)
+        .filter(|(_, agent)| agent.model == model)
+        .map(|(entity, _)| entity)
+        .min_by_key(|entity| entity.to_bits())
 }
