@@ -6,8 +6,9 @@ use bevy::{
 };
 
 use crate::harness::{
-    AssistantMessage, Compaction, Model, ModelChange, PersistenceFailure, Recovery, Sequence,
-    ToolDefinition, ToolOutcome, ToolUse, Turn, UserMessage,
+    AssistantMessage, Compaction, Model, ModelChange, ModelRequest, PersistenceFailure, Recovery,
+    Sequence, ToolDefinition, ToolOutcome, ToolUse, Turn, TurnCancelled, TurnFailed, TurnFailure,
+    TurnInterrupted, UserMessage, WorkStatus,
 };
 
 pub struct CameraPlugin;
@@ -23,11 +24,28 @@ pub struct TranscriptCamera {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptWork {
+    Model,
+    Tool(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranscriptRow {
     User(String),
     Assistant(String),
-    ToolUse { tool: String, input: String },
-    ToolOutcome { tool: String, output: String },
+    ToolUse {
+        tool: String,
+        input: String,
+    },
+    ToolOutcome {
+        tool: String,
+        output: String,
+    },
+    Work {
+        work: TranscriptWork,
+        status: WorkStatus,
+    },
+    System(String),
     Error(String),
 }
 
@@ -85,32 +103,51 @@ pub(crate) struct TranscriptProjector<'w, 's> {
     turns: Query<'w, 's, (Entity, &'static Turn)>,
     users: Query<'w, 's, &'static UserMessage>,
     assistants: Query<'w, 's, &'static AssistantMessage>,
+    model_requests: Query<'w, 's, &'static ModelRequest>,
     tool_uses: Query<'w, 's, (Entity, &'static ToolUse)>,
     tool_outcomes: Query<'w, 's, &'static ToolOutcome>,
     tools: Query<'w, 's, (Entity, &'static ToolDefinition)>,
+    failures: Query<'w, 's, &'static TurnFailed>,
+    cancellations: Query<'w, 's, &'static TurnCancelled>,
+    interruptions: Query<'w, 's, &'static TurnInterrupted>,
     recoveries: Query<'w, 's, &'static Recovery>,
     persistence_failures: Query<'w, 's, &'static PersistenceFailure>,
 }
 
+struct TranscriptFacts<'a> {
+    turns: Vec<(Entity, &'a Turn)>,
+    users: Vec<&'a UserMessage>,
+    assistants: Vec<&'a AssistantMessage>,
+    model_requests: Vec<&'a ModelRequest>,
+    tool_uses: Vec<(Entity, &'a ToolUse)>,
+    tool_outcomes: Vec<&'a ToolOutcome>,
+    tools: Vec<(Entity, &'a ToolDefinition)>,
+    failures: Vec<&'a TurnFailed>,
+    cancellations: Vec<&'a TurnCancelled>,
+    interruptions: Vec<&'a TurnInterrupted>,
+    recoveries: Vec<&'a Recovery>,
+    persistence_failures: Vec<&'a PersistenceFailure>,
+}
+
 impl TranscriptProjector<'_, '_> {
     pub(crate) fn project(&self, camera: &TranscriptCamera) -> Vec<TranscriptRow> {
-        let mut rows = project_transcript_parts(
+        project_transcript_parts(
             *camera,
-            self.turns.iter(),
-            self.users.iter(),
-            self.assistants.iter(),
-            self.tool_uses.iter(),
-            self.tool_outcomes.iter(),
-            self.tools.iter(),
-        );
-        append_transcript_failures(
-            &mut rows,
-            *camera,
-            self.turns.iter(),
-            self.recoveries.iter(),
-            self.persistence_failures.iter(),
-        );
-        rows
+            TranscriptFacts {
+                turns: self.turns.iter().collect(),
+                users: self.users.iter().collect(),
+                assistants: self.assistants.iter().collect(),
+                model_requests: self.model_requests.iter().collect(),
+                tool_uses: self.tool_uses.iter().collect(),
+                tool_outcomes: self.tool_outcomes.iter().collect(),
+                tools: self.tools.iter().collect(),
+                failures: self.failures.iter().collect(),
+                cancellations: self.cancellations.iter().collect(),
+                interruptions: self.interruptions.iter().collect(),
+                recoveries: self.recoveries.iter().collect(),
+                persistence_failures: self.persistence_failures.iter().collect(),
+            },
+        )
     }
 }
 
@@ -121,29 +158,33 @@ pub fn project_transcript(world: &mut World, camera: Entity) -> Vec<TranscriptRo
     let mut turns = world.query::<(Entity, &Turn)>();
     let mut users = world.query::<&UserMessage>();
     let mut assistants = world.query::<&AssistantMessage>();
+    let mut model_requests = world.query::<&ModelRequest>();
     let mut tool_uses = world.query::<(Entity, &ToolUse)>();
     let mut tool_outcomes = world.query::<&ToolOutcome>();
     let mut tools = world.query::<(Entity, &ToolDefinition)>();
+    let mut failures = world.query::<&TurnFailed>();
+    let mut cancellations = world.query::<&TurnCancelled>();
+    let mut interruptions = world.query::<&TurnInterrupted>();
     let mut recoveries = world.query::<&Recovery>();
     let mut persistence_failures = world.query::<&PersistenceFailure>();
 
-    let mut rows = project_transcript_parts(
+    project_transcript_parts(
         camera,
-        turns.iter(world),
-        users.iter(world),
-        assistants.iter(world),
-        tool_uses.iter(world),
-        tool_outcomes.iter(world),
-        tools.iter(world),
-    );
-    append_transcript_failures(
-        &mut rows,
-        camera,
-        turns.iter(world),
-        recoveries.iter(world),
-        persistence_failures.iter(world),
-    );
-    rows
+        TranscriptFacts {
+            turns: turns.iter(world).collect(),
+            users: users.iter(world).collect(),
+            assistants: assistants.iter(world).collect(),
+            model_requests: model_requests.iter(world).collect(),
+            tool_uses: tool_uses.iter(world).collect(),
+            tool_outcomes: tool_outcomes.iter(world).collect(),
+            tools: tools.iter(world).collect(),
+            failures: failures.iter(world).collect(),
+            cancellations: cancellations.iter(world).collect(),
+            interruptions: interruptions.iter(world).collect(),
+            recoveries: recoveries.iter(world).collect(),
+            persistence_failures: persistence_failures.iter(world).collect(),
+        },
+    )
 }
 
 pub fn project_context(
@@ -313,45 +354,58 @@ fn context_entry_text(entry: &ContextEntry) -> &str {
     }
 }
 
-fn append_transcript_failures<'a>(
-    rows: &mut Vec<TranscriptRow>,
-    camera: TranscriptCamera,
-    turns: impl Iterator<Item = (Entity, &'a Turn)>,
-    recoveries: impl Iterator<Item = &'a Recovery>,
-    persistence_failures: impl Iterator<Item = &'a PersistenceFailure>,
-) {
-    let turns: HashMap<_, _> = turns.collect();
-    if let Ok(branch) = branch_order(&turns, camera.session, camera.head) {
-        rows.extend(
-            recoveries
-                .filter(|recovery| branch.contains_key(&recovery.turn))
-                .map(|recovery| TranscriptRow::Error(recovery.text.clone())),
-        );
+fn turn_failure_text(failure: &TurnFailure) -> String {
+    match failure {
+        TurnFailure::Provider(failure) => format!("Provider: {}", failure.message),
+        TurnFailure::Tool(failure) => format!("Tool: {}", failure.message),
+        TurnFailure::Recovery(failure) => format!("Recovery: {}", failure.message),
     }
-    rows.extend(persistence_failures.map(|failure| TranscriptRow::Error(failure.message.clone())));
 }
 
-fn project_transcript_parts<'a>(
+fn persistence_failure_rows(
+    mut failures: Vec<&PersistenceFailure>,
+) -> impl Iterator<Item = TranscriptRow> {
+    failures.sort_by_key(|failure| failure.sequence);
+    failures
+        .into_iter()
+        .map(|failure| TranscriptRow::Error(format!("Persistence: {}", failure.message)))
+}
+
+fn project_transcript_parts(
     camera: TranscriptCamera,
-    turns: impl Iterator<Item = (Entity, &'a Turn)>,
-    users: impl Iterator<Item = &'a UserMessage>,
-    assistants: impl Iterator<Item = &'a AssistantMessage>,
-    tool_uses: impl Iterator<Item = (Entity, &'a ToolUse)>,
-    tool_outcomes: impl Iterator<Item = &'a ToolOutcome>,
-    tools: impl Iterator<Item = (Entity, &'a ToolDefinition)>,
+    facts: TranscriptFacts<'_>,
 ) -> Vec<TranscriptRow> {
-    let turns: HashMap<_, _> = turns.collect();
+    let TranscriptFacts {
+        turns,
+        users,
+        assistants,
+        model_requests,
+        tool_uses,
+        tool_outcomes,
+        tools,
+        failures,
+        cancellations,
+        interruptions,
+        recoveries,
+        persistence_failures,
+    } = facts;
+    let turns: HashMap<_, _> = turns.into_iter().collect();
     let branch = match branch_order(&turns, camera.session, camera.head) {
         Ok(branch) => branch,
-        Err(error) => return vec![TranscriptRow::Error(transcript_error(error).into())],
+        Err(error) => {
+            let mut rows = vec![TranscriptRow::Error(transcript_error(error).into())];
+            rows.extend(persistence_failure_rows(persistence_failures));
+            return rows;
+        }
     };
     let tools: HashMap<_, _> = tools
+        .into_iter()
         .map(|(entity, tool)| (entity, tool.name.clone()))
         .collect();
-    let tool_uses: HashMap<_, _> = tool_uses.collect();
+    let tool_uses: HashMap<_, _> = tool_uses.into_iter().collect();
     let mut items = Vec::new();
 
-    items.extend(users.filter_map(|message| {
+    items.extend(users.into_iter().filter_map(|message| {
         branch.get(&message.turn).map(|order| {
             (
                 *order,
@@ -362,7 +416,7 @@ fn project_transcript_parts<'a>(
             )
         })
     }));
-    items.extend(assistants.filter_map(|message| {
+    items.extend(assistants.into_iter().filter_map(|message| {
         branch.get(&message.turn).map(|order| {
             (
                 *order,
@@ -373,13 +427,30 @@ fn project_transcript_parts<'a>(
             )
         })
     }));
+    items.extend(model_requests.into_iter().filter_map(|request| {
+        if !matches!(request.status, WorkStatus::Pending | WorkStatus::Running) {
+            return None;
+        }
+        branch.get(&request.turn).map(|order| {
+            (
+                *order,
+                request.sequence,
+                request.id.0,
+                2,
+                TranscriptRow::Work {
+                    work: TranscriptWork::Model,
+                    status: request.status,
+                },
+            )
+        })
+    }));
     items.extend(tool_uses.values().filter_map(|tool_use| {
         branch.get(&tool_use.turn).map(|order| {
             (
                 *order,
                 tool_use.sequence,
                 tool_use.id.0,
-                2,
+                3,
                 TranscriptRow::ToolUse {
                     tool: tools
                         .get(&tool_use.tool)
@@ -390,14 +461,36 @@ fn project_transcript_parts<'a>(
             )
         })
     }));
-    items.extend(tool_outcomes.filter_map(|outcome| {
+    items.extend(tool_uses.values().filter_map(|tool_use| {
+        if !matches!(tool_use.status, WorkStatus::Pending | WorkStatus::Running) {
+            return None;
+        }
+        branch.get(&tool_use.turn).map(|order| {
+            (
+                *order,
+                tool_use.sequence,
+                tool_use.id.0,
+                4,
+                TranscriptRow::Work {
+                    work: TranscriptWork::Tool(
+                        tools
+                            .get(&tool_use.tool)
+                            .cloned()
+                            .unwrap_or_else(|| "unknown tool".into()),
+                    ),
+                    status: tool_use.status,
+                },
+            )
+        })
+    }));
+    items.extend(tool_outcomes.into_iter().filter_map(|outcome| {
         let tool_use = tool_uses.get(&outcome.tool_use)?;
         branch.get(&outcome.turn).map(|order| {
             (
                 *order,
                 outcome.sequence,
                 tool_use.id.0,
-                3,
+                5,
                 TranscriptRow::ToolOutcome {
                     tool: tools
                         .get(&tool_use.tool)
@@ -408,8 +501,54 @@ fn project_transcript_parts<'a>(
             )
         })
     }));
+    items.extend(failures.into_iter().filter_map(|failure| {
+        branch.get(&failure.turn).map(|order| {
+            (
+                *order,
+                failure.sequence,
+                failure.generation,
+                6,
+                TranscriptRow::Error(turn_failure_text(&failure.failure)),
+            )
+        })
+    }));
+    items.extend(cancellations.into_iter().filter_map(|outcome| {
+        branch.get(&outcome.turn).map(|order| {
+            (
+                *order,
+                outcome.sequence,
+                outcome.generation,
+                7,
+                TranscriptRow::System("Turn cancelled.".into()),
+            )
+        })
+    }));
+    items.extend(interruptions.into_iter().filter_map(|outcome| {
+        branch.get(&outcome.turn).map(|order| {
+            (
+                *order,
+                outcome.sequence,
+                outcome.generation,
+                8,
+                TranscriptRow::System("Turn interrupted during recovery.".into()),
+            )
+        })
+    }));
+    items.extend(recoveries.into_iter().filter_map(|recovery| {
+        branch.get(&recovery.turn).map(|order| {
+            (
+                *order,
+                recovery.sequence,
+                0,
+                9,
+                TranscriptRow::System(recovery.text.clone()),
+            )
+        })
+    }));
     items.sort_by_key(|(order, Sequence(sequence), id, kind, _)| (*order, *sequence, *id, *kind));
-    items.into_iter().map(|(_, _, _, _, item)| item).collect()
+    let mut rows: Vec<_> = items.into_iter().map(|(_, _, _, _, item)| item).collect();
+    rows.extend(persistence_failure_rows(persistence_failures));
+    rows
 }
 
 fn branch_order(

@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::{
     ActiveSession, MajinSet, MajinStartupSet, Session, SubmitPrompt, TranscriptCamera,
-    TranscriptRow, camera::TranscriptProjector,
+    TranscriptRow, TranscriptWork, camera::TranscriptProjector,
 };
 
 pub struct TuiPlugin;
@@ -197,6 +197,14 @@ fn transcript_lines(items: &[TranscriptRow]) -> Vec<Line<'static>> {
             TranscriptRow::ToolOutcome { tool, output } => {
                 ("TOOL", Color::Yellow, format!("{tool}: {output}"))
             }
+            TranscriptRow::Work { work, status } => {
+                let work = match work {
+                    TranscriptWork::Model => "model".into(),
+                    TranscriptWork::Tool(tool) => format!("tool {tool}"),
+                };
+                ("ACTIVE", Color::Blue, format!("{work}: {status:?}"))
+            }
+            TranscriptRow::System(body) => ("SYSTEM", Color::Magenta, body.clone()),
             TranscriptRow::Error(body) => ("ERROR", Color::Red, body.clone()),
         };
         lines.push(Line::from(Span::styled(
