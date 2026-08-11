@@ -30,6 +30,17 @@ pub(super) fn persist(world: &mut World) {
     if !config.enabled || world.resource::<PersistenceState>().blocked {
         return;
     }
+    let exiting = world
+        .get_resource::<Messages<AppExit>>()
+        .is_some_and(|messages| !messages.is_empty());
+    if !exiting
+        && world
+            .resource::<PersistenceState>()
+            .dirty_since
+            .is_some_and(|since| since.elapsed() < config.debounce)
+    {
+        return;
+    }
     let current = match collect_events(world) {
         Ok(events) => events,
         Err(error) => {
@@ -64,9 +75,6 @@ pub(super) fn persist(world: &mut World) {
         let since = state.dirty_since.get_or_insert_with(Instant::now);
         since.elapsed() >= config.debounce
     };
-    let exiting = world
-        .get_resource::<Messages<AppExit>>()
-        .is_some_and(|messages| !messages.is_empty());
     if !should_write && !exiting {
         return;
     }

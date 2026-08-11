@@ -1,4 +1,4 @@
-use bevy::{app::AppExit, prelude::*};
+use bevy::{app::AppExit, ecs::system::SystemParam, prelude::*};
 use bevy_ratatui::{
     RatatuiContext,
     event::{KeyMessage, MouseMessage},
@@ -12,8 +12,9 @@ use ratatui::{
 };
 
 use crate::{
-    ActiveSession, MajinSet, MajinStartupSet, Session, SubmitPrompt, TranscriptCamera,
-    TranscriptRow, TranscriptWork, camera::TranscriptProjector,
+    ActiveSession, HarnessReady, InterruptTurn, MajinSet, MajinStartupSet, ModelRequest,
+    SelectBranch, SelectSession, Session, SubmitPrompt, ToolUse, TranscriptCamera, TranscriptRow,
+    TranscriptWork, Turn, WorkStatus, camera::TranscriptProjector,
 };
 
 pub struct TuiPlugin;
@@ -23,7 +24,13 @@ impl Plugin for TuiPlugin {
         app.add_message::<AppExit>()
             .add_message::<KeyMessage>()
             .add_message::<MouseMessage>()
-            .add_systems(Startup, spawn_tui_view.in_set(MajinStartupSet::Tui))
+            .add_systems(
+                Startup,
+                draw_startup_loading
+                    .in_set(MajinStartupSet::Loading)
+                    .run_if(resource_exists::<RatatuiContext>),
+            )
+            .add_systems(Startup, initialize_tui_view.in_set(MajinStartupSet::Tui))
             .add_systems(
                 Update,
                 (handle_input, handle_mouse_input).in_set(MajinSet::Input),
@@ -37,9 +44,17 @@ impl Plugin for TuiPlugin {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TuiFocus {
+    #[default]
+    Composer,
+    Transcript,
+}
+
 #[derive(Component)]
 pub struct TuiView {
     pub composer: String,
+    pub focus: TuiFocus,
     pub transcript_camera: Entity,
 }
 
@@ -48,7 +63,41 @@ pub struct TerminalTranscriptViewport {
     pub scroll_from_bottom: usize,
 }
 
-fn spawn_tui_view(world: &mut World) {
+#[derive(SystemParam)]
+struct TuiInputState<'w, 's> {
+    views: Query<'w, 's, &'static mut TuiView>,
+    viewports: Query<'w, 's, &'static mut TerminalTranscriptViewport>,
+    ready: Option<Res<'w, HarnessReady>>,
+    active_session: Option<Res<'w, ActiveSession>>,
+    sessions: Query<'w, 's, (Entity, &'static Session)>,
+    turns: Query<'w, 's, (Entity, &'static Turn)>,
+    requests: Query<'w, 's, &'static ModelRequest>,
+    tool_uses: Query<'w, 's, &'static ToolUse>,
+}
+
+#[derive(SystemParam)]
+struct TuiDrawState<'w, 's> {
+    ready: Option<Res<'w, HarnessReady>>,
+    active_session: Option<Res<'w, ActiveSession>>,
+    sessions: Query<'w, 's, &'static Session>,
+    turns: Query<'w, 's, &'static Turn>,
+    views: Query<'w, 's, &'static mut TuiView>,
+    cameras: Query<
+        'w,
+        's,
+        (
+            &'static TranscriptCamera,
+            &'static mut TerminalTranscriptViewport,
+        ),
+    >,
+    projector: TranscriptProjector<'w, 's>,
+}
+
+fn draw_startup_loading(mut context: ResMut<RatatuiContext>) -> Result {
+    draw_loading(&mut context)
+}
+
+fn initialize_tui_view(world: &mut World) {
     let session = world.resource::<ActiveSession>().0;
     let head = world
         .get::<Session>(session)
@@ -62,72 +111,234 @@ fn spawn_tui_view(world: &mut World) {
         .id();
     world.spawn(TuiView {
         composer: String::new(),
+        focus: TuiFocus::Composer,
         transcript_camera: camera,
     });
 }
 
 fn handle_input(
     mut messages: MessageReader<KeyMessage>,
-    mut views: Query<&mut TuiView>,
-    mut viewports: Query<&mut TerminalTranscriptViewport>,
-    active_session: Res<ActiveSession>,
-    sessions: Query<(), With<Session>>,
+    state: TuiInputState,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let TuiInputState {
+        mut views,
+        mut viewports,
+        ready,
+        active_session,
+        sessions,
+        turns,
+        requests,
+        tool_uses,
+    } = state;
     let Ok(mut ui) = views.single_mut() else {
         return;
     };
+    if ready.is_none() {
+        return;
+    }
+    let mut selected_session = active_session.as_deref().map(|active| active.0);
+    let mut selected_head = selected_session.and_then(|session| session_head(&sessions, session));
+    let mut submission_queued = false;
 
     for message in messages.read() {
         if message.kind == KeyEventKind::Release {
             continue;
         }
-        if message
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        if message.code == KeyCode::Esc {
+            exit.write_default();
             continue;
         }
+        let Some(session) = selected_session else {
+            continue;
+        };
+        let camera = ui.transcript_camera;
 
-        match message.code {
-            KeyCode::Esc => {
-                exit.write_default();
-            }
-            KeyCode::Enter => {
-                let text = ui.composer.trim().to_owned();
-                if !text.is_empty() && sessions.get(active_session.0).is_ok() {
-                    commands.queue(SubmitPrompt {
-                        session: active_session.0,
-                        text,
-                    });
-                    ui.composer.clear();
-                    if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
-                        viewport.scroll_from_bottom = 0;
-                    }
+        match (message.code, message.modifiers) {
+            (KeyCode::Tab, _) => {
+                if let Some(next) = adjacent_session(&sessions, session, 1) {
+                    selected_session = Some(next);
+                    selected_head = session_head(&sessions, next);
+                    commands.queue(SelectSession { session: next });
                 }
             }
-            KeyCode::Backspace => {
+            (KeyCode::BackTab, _) => {
+                if let Some(previous) = adjacent_session(&sessions, session, -1) {
+                    selected_session = Some(previous);
+                    selected_head = session_head(&sessions, previous);
+                    commands.queue(SelectSession { session: previous });
+                }
+            }
+            (KeyCode::Up, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                if !session_has_active_work(&requests, &tool_uses, &turns, session)
+                    && let Some(head) = adjacent_branch(&turns, session, selected_head, -1)
+                {
+                    selected_head = Some(head);
+                    commands.queue(SelectBranch { session, head });
+                }
+            }
+            (KeyCode::Down, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                if !session_has_active_work(&requests, &tool_uses, &turns, session)
+                    && let Some(head) = adjacent_branch(&turns, session, selected_head, 1)
+                {
+                    selected_head = Some(head);
+                    commands.queue(SelectBranch { session, head });
+                }
+            }
+            (KeyCode::Char('x'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(turn) = interruptible_turn(&requests, &tool_uses, selected_head) {
+                    commands.queue(InterruptTurn { turn });
+                }
+            }
+            (KeyCode::F(2), _) => {
+                ui.focus = match ui.focus {
+                    TuiFocus::Composer => TuiFocus::Transcript,
+                    TuiFocus::Transcript => TuiFocus::Composer,
+                };
+            }
+            _ if message
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+            (KeyCode::Enter, _) if ui.focus == TuiFocus::Composer => {
+                let text = ui.composer.trim().to_owned();
+                if !submission_queued
+                    && !text.is_empty()
+                    && sessions.get(session).is_ok()
+                    && !session_has_active_work(&requests, &tool_uses, &turns, session)
+                {
+                    commands.queue(SubmitPrompt { session, text });
+                    ui.composer.clear();
+                    if let Ok(mut viewport) = viewports.get_mut(camera) {
+                        viewport.scroll_from_bottom = 0;
+                    }
+                    submission_queued = true;
+                }
+            }
+            (KeyCode::Backspace, _) if ui.focus == TuiFocus::Composer => {
                 ui.composer.pop();
             }
-            KeyCode::Char(character) => ui.composer.push(character),
-            KeyCode::Up => scroll_up(&mut viewports, ui.transcript_camera, 1),
-            KeyCode::Down => scroll_down(&mut viewports, ui.transcript_camera, 1),
-            KeyCode::PageUp => scroll_up(&mut viewports, ui.transcript_camera, 10),
-            KeyCode::PageDown => scroll_down(&mut viewports, ui.transcript_camera, 10),
-            KeyCode::Home => {
-                if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
+            (KeyCode::Char(character), _) if ui.focus == TuiFocus::Composer => {
+                ui.composer.push(character);
+            }
+            (KeyCode::Up, _) => scroll_up(&mut viewports, camera, 1),
+            (KeyCode::Down, _) => scroll_down(&mut viewports, camera, 1),
+            (KeyCode::PageUp, _) => scroll_up(&mut viewports, camera, 10),
+            (KeyCode::PageDown, _) => scroll_down(&mut viewports, camera, 10),
+            (KeyCode::Home, _) => {
+                if let Ok(mut viewport) = viewports.get_mut(camera) {
                     viewport.scroll_from_bottom = usize::MAX;
                 }
             }
-            KeyCode::End => {
-                if let Ok(mut viewport) = viewports.get_mut(ui.transcript_camera) {
+            (KeyCode::End, _) => {
+                if let Ok(mut viewport) = viewports.get_mut(camera) {
                     viewport.scroll_from_bottom = 0;
                 }
             }
             _ => {}
         }
     }
+}
+
+fn session_head(sessions: &Query<(Entity, &Session)>, session: Entity) -> Option<Entity> {
+    sessions
+        .get(session)
+        .ok()
+        .and_then(|(_, session)| session.active_head)
+}
+
+fn adjacent_session(
+    sessions: &Query<(Entity, &Session)>,
+    current: Entity,
+    direction: isize,
+) -> Option<Entity> {
+    let mut sessions: Vec<_> = sessions.iter().collect();
+    sessions.sort_by_key(|(entity, session)| (session.id.0, entity.to_bits()));
+    adjacent(
+        &sessions
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect::<Vec<_>>(),
+        current,
+        direction,
+    )
+}
+
+fn adjacent_branch(
+    turns: &Query<(Entity, &Turn)>,
+    session: Entity,
+    current: Option<Entity>,
+    direction: isize,
+) -> Option<Entity> {
+    let mut turns: Vec<_> = turns
+        .iter()
+        .filter(|(_, turn)| turn.session == session)
+        .collect();
+    turns.sort_by_key(|(entity, turn)| (turn.sequence, turn.id.0, entity.to_bits()));
+    let turns: Vec<_> = turns.into_iter().map(|(entity, _)| entity).collect();
+    match current {
+        Some(current) => adjacent(&turns, current, direction),
+        None if direction < 0 => turns.last().copied(),
+        None => turns.first().copied(),
+    }
+}
+
+fn adjacent(items: &[Entity], current: Entity, direction: isize) -> Option<Entity> {
+    if items.is_empty() {
+        return None;
+    }
+    if items.len() == 1 {
+        return (items[0] != current).then_some(items[0]);
+    }
+    let current = items.iter().position(|item| *item == current);
+    let index = match (current, direction < 0) {
+        (Some(0), true) | (None, true) => items.len() - 1,
+        (Some(index), true) => index - 1,
+        (Some(index), false) => (index + 1) % items.len(),
+        (None, false) => 0,
+    };
+    Some(items[index])
+}
+
+fn interruptible_turn(
+    requests: &Query<&ModelRequest>,
+    tool_uses: &Query<&ToolUse>,
+    head: Option<Entity>,
+) -> Option<Entity> {
+    let head = head?;
+    requests
+        .iter()
+        .any(|request| request.turn == head && is_active(request.status))
+        .then_some(head)
+        .or_else(|| {
+            tool_uses
+                .iter()
+                .any(|tool_use| tool_use.turn == head && is_active(tool_use.status))
+                .then_some(head)
+        })
+}
+
+fn session_has_active_work(
+    requests: &Query<&ModelRequest>,
+    tool_uses: &Query<&ToolUse>,
+    turns: &Query<(Entity, &Turn)>,
+    session: Entity,
+) -> bool {
+    requests.iter().any(|request| {
+        is_active(request.status)
+            && turns
+                .get(request.turn)
+                .is_ok_and(|(_, turn)| turn.session == session)
+    }) || tool_uses.iter().any(|tool_use| {
+        is_active(tool_use.status)
+            && turns
+                .get(tool_use.turn)
+                .is_ok_and(|(_, turn)| turn.session == session)
+    })
+}
+
+fn is_active(status: WorkStatus) -> bool {
+    matches!(status, WorkStatus::Pending | WorkStatus::Running)
 }
 
 fn handle_mouse_input(
@@ -218,19 +429,54 @@ fn transcript_lines(items: &[TranscriptRow]) -> Vec<Line<'static>> {
     lines
 }
 
-fn draw(
-    mut context: ResMut<RatatuiContext>,
-    mut views: Query<&mut TuiView>,
-    mut cameras: Query<(&TranscriptCamera, &mut TerminalTranscriptViewport)>,
-    projector: TranscriptProjector,
-) -> Result {
+fn draw_loading(context: &mut RatatuiContext) -> Result {
+    context.draw(|frame| {
+        frame.render_widget(
+            Paragraph::new("Loading harness...")
+                .block(Block::default().borders(Borders::ALL).title(" MAJIN ")),
+            frame.area(),
+        );
+    })?;
+    Ok(())
+}
+
+fn draw(mut context: ResMut<RatatuiContext>, state: TuiDrawState) -> Result {
+    let TuiDrawState {
+        ready,
+        active_session,
+        sessions,
+        turns,
+        mut views,
+        mut cameras,
+        projector,
+    } = state;
     let Ok(ui) = views.single_mut() else {
         return Ok(());
     };
+    if ready.is_none() {
+        return draw_loading(&mut context);
+    }
     let Ok((camera, mut viewport)) = cameras.get_mut(ui.transcript_camera) else {
         return Ok(());
     };
     let items = projector.project(camera);
+    let selection = active_session
+        .as_deref()
+        .and_then(|active| sessions.get(active.0).ok())
+        .map(|session| {
+            let turn = session
+                .active_head
+                .and_then(|head| turns.get(head).ok())
+                .map(|turn| format!("turn {}", turn.id.0))
+                .unwrap_or_else(|| "empty".into());
+            format!("session {} · {turn}", session.id.0)
+        })
+        .unwrap_or_else(|| "no session".into());
+    let composer_color = if ui.focus == TuiFocus::Composer {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
 
     context.draw(|frame| {
         let areas = Layout::vertical([
@@ -248,7 +494,7 @@ fn draw(
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("agent harness", Style::default().fg(Color::DarkGray)),
+            Span::styled(selection.as_str(), Style::default().fg(Color::DarkGray)),
             Span::raw("  "),
             Span::styled("● fake", Style::default().fg(Color::Yellow)),
         ]))
@@ -278,21 +524,25 @@ fn draw(
         let composer = Paragraph::new(ui.composer.as_str()).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(composer_color))
                 .title(" Message "),
         );
         frame.render_widget(composer, areas[2]);
 
-        let help = Line::from(" Enter send  Wheel/↑/↓ scroll  PgUp/PgDn page  Esc quit ")
-            .style(Style::default().fg(Color::DarkGray));
+        let help = Line::from(
+            " Enter send  Tab/Shift-Tab session  Ctrl+↑/↓ branch  Ctrl+X interrupt  F2 focus  Esc quit ",
+        )
+        .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(help, areas[3]);
 
-        let cursor_x = areas[2]
-            .x
-            .saturating_add(1)
-            .saturating_add(ui.composer.chars().count() as u16)
-            .min(areas[2].right().saturating_sub(2));
-        frame.set_cursor_position((cursor_x, areas[2].y.saturating_add(1)));
+        if ui.focus == TuiFocus::Composer {
+            let cursor_x = areas[2]
+                .x
+                .saturating_add(1)
+                .saturating_add(ui.composer.chars().count() as u16)
+                .min(areas[2].right().saturating_sub(2));
+            frame.set_cursor_position((cursor_x, areas[2].y.saturating_add(1)));
+        }
     })?;
 
     Ok(())
