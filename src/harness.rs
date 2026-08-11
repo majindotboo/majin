@@ -466,6 +466,21 @@ impl HarnessIds {
         self.next_sequence += 1;
         sequence
     }
+
+    pub(crate) fn restore_from_maxima(
+        &mut self,
+        turn: u64,
+        message: u64,
+        model_request: u64,
+        tool_call: u64,
+        sequence: u64,
+    ) {
+        self.next_turn = turn.saturating_add(1);
+        self.next_message = message.saturating_add(1);
+        self.next_model_request = model_request.saturating_add(1);
+        self.next_tool_call = tool_call.saturating_add(1);
+        self.next_sequence = sequence.saturating_add(1);
+    }
 }
 
 pub struct SubmitPrompt {
