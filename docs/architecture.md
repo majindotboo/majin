@@ -1,7 +1,7 @@
 # Architecture
 
 This document defines the target architecture.
-The current fake TUI is a prototype.
+The current TUI is intentionally minimal, but it follows the production ownership and persistence boundaries below.
 
 ## Composition
 
@@ -106,22 +106,23 @@ Cameras decide which facts affect terminal display and provider context.
 
 ## Persistence
 
-Persistence uses a scoped Bevy DynamicWorld snapshot.
-Only persistent domain entities and registered components enter the snapshot.
+Persistence uses an explicit, versioned JSONL event log.
+Each Session owns one append-only file under `~/.majin/sessions/session-<id>.jsonl`.
+There is no central index and no per-turn file; the sessions directory is discovered directly from the filesystem.
+
+Records contain domain IDs and typed references, never Bevy Entity values or Rust module paths.
+The Bevy World is rebuilt by replaying a session log.
 Capability definitions, transient tasks, TUI views, terminal cameras, projections, and runtime resources stay outside it.
-Agent context camera instances can persist when they are domain state.
+The persistent ContextCamera budget is recorded as session state because it affects future provider context.
 
-Entity relationships persist inside the scoped snapshot.
-Bevy remaps Entity links during hydration.
-Stable IDs identify durable roots and correlated facts that cross snapshot boundaries.
-
-Persistent changes mark the snapshot dirty.
-Persistence writes a debounced atomic snapshot.
+Each record carries a schema version and per-session ordinal.
+Writes append and sync complete records.
+An incomplete final JSONL record is truncated during recovery; a malformed complete record is preserved and blocks replay.
+The default storage path is `~/.majin/sessions`; callers can override it through `PersistenceConfig`.
 Majin uses a `HarnessReady` resource to gate commands until capability registration and hydration finish.
 The TUI renders a loading state before that gate opens.
 
-The internal snapshot format can break during early development.
-No migration contract exists yet.
+Schema migrations are explicit and versioned.
 
 ## Failures
 

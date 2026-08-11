@@ -1,3 +1,5 @@
-# Scoped World persistence
+# Session event-log persistence
 
-Majin persists selected domain entities and registered components through a scoped Bevy DynamicWorld snapshot. Bevy remaps Entity relationships during hydration, while selective stable IDs support correlation and external contracts. Runtime capabilities, tasks, TUI state, and projections remain transient.
+Majin persists explicit domain events as one versioned JSONL append-only log per Session under `~/.majin/sessions`. Session files are discovered directly from the directory; there is no central index and no file per Turn.
+
+The log contains stable domain IDs and typed references. Bevy Entity values, ECS component names, capability executors, task handles, TUI state, and projections remain runtime-only. Startup replays the log into a fresh Bevy World, recovers incomplete final records, and converts persisted in-flight work into interruption outcomes.
