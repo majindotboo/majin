@@ -73,6 +73,7 @@ fn transcript_projection_sorts_facts_by_sequence_and_id() {
             session,
             parent: None,
             sequence: Sequence(1),
+            generation: 0,
         })
         .id();
     app.world_mut().spawn(AssistantMessage {
@@ -201,111 +202,72 @@ fn context_camera_projects_only_its_selected_branch(mut app: App) {
     );
 }
 
-#[rstest]
-fn context_camera_orders_context_shaping_facts(mut app: App) {
-    let session = active_session(&app);
-    let agent = single_entity::<Agent>(&mut app);
-    let model = single_entity::<Model>(&mut app);
-    let turn = app
-        .world_mut()
-        .spawn(Turn {
-            id: TurnId(1),
-            session,
-            parent: None,
-            sequence: Sequence(1),
-        })
-        .id();
-    app.world_mut().spawn(UserMessage {
-        id: MessageId(1),
-        turn,
-        sequence: Sequence(2),
-        text: "prompt".into(),
-    });
-    app.world_mut().spawn(ModelChange {
-        turn,
-        model,
-        sequence: Sequence(3),
-    });
-    app.world_mut().spawn(Compaction {
-        turn,
-        summary: "summary".into(),
-        sequence: Sequence(4),
-    });
-    app.world_mut().spawn(Recovery {
-        turn,
-        text: "recovered".into(),
-        sequence: Sequence(5),
-    });
-    app.world_mut().spawn(AssistantMessage {
-        id: MessageId(2),
-        turn,
-        sequence: Sequence(6),
-        text: "answer".into(),
-    });
-    let camera = app
-        .world_mut()
-        .spawn(ContextCamera {
-            agent,
-            session,
-            head: Some(turn),
-            budget: 4096,
-        })
-        .id();
-
-    assert_eq!(
-        project_context(app.world_mut(), camera),
-        Ok(ContextDocument {
-            entries: vec![
-                ContextEntry::User("prompt".into()),
-                ContextEntry::ModelChange("fake-model".into()),
-                ContextEntry::Compaction("summary".into()),
-                ContextEntry::Recovery("recovered".into()),
-                ContextEntry::Assistant("answer".into()),
-            ],
-        })
-    );
-}
-
-#[rstest]
-fn context_camera_orders_equal_sequence_entries_deterministically(mut app: App) {
-    let session = active_session(&app);
-    let agent = single_entity::<Agent>(&mut app);
-    let turn = app
-        .world_mut()
-        .spawn(Turn {
-            id: TurnId(1),
-            session,
-            parent: None,
-            sequence: Sequence(1),
-        })
-        .id();
-    app.world_mut().spawn(UserMessage {
-        id: MessageId(2),
-        turn,
-        sequence: Sequence(2),
-        text: "second message".into(),
-    });
-    app.world_mut().spawn(AssistantMessage {
-        id: MessageId(1),
-        turn,
-        sequence: Sequence(2),
-        text: "first message".into(),
-    });
-    app.world_mut().spawn(Compaction {
-        turn,
-        summary: "zebra".into(),
-        sequence: Sequence(2),
-    });
-    app.world_mut().spawn(Compaction {
-        turn,
-        summary: "apple".into(),
-        sequence: Sequence(2),
-    });
-    let camera = app
-        .world_mut()
-        .spawn(ContextCamera {
-            agent,
-            session,
+    #[test]
+    fn context_fact_ordering_is_stable_for_generated_fact_mixes(
+        specs in proptest::collection::vec((1u8..=8u8, prompt_text(), 0u8..=4u8), 1..=12)
+    ) {
+        let mut harness = Harness::disabled();
+        let turn = spawn_turn(&mut harness.app, harness.session, 1, None, 1);
+        let mut expected = Vec::with_capacity(specs.len());
+        for (index, (sequence, text, kind)) in specs.iter().enumerate() {
+            let id = index as u64 + 1;
+            let (id_key, kind_key, entry) = match kind {
+                0 => {
+                    harness.app.world_mut().spawn(UserMessage {
+                        id: MessageId(id),
+                        turn,
+                        sequence: Sequence(*sequence as u64),
+                        text: text.clone(),
+                    });
+                    (id, 0, ContextEntry::User(text.clone()))
+                }
+                1 => {
+                    harness.app.world_mut().spawn(AssistantMessage {
+                        id: MessageId(id),
+                        turn,
+                        sequence: Sequence(*sequence as u64),
+                        text: text.clone(),
+                    });
+                    (id, 1, ContextEntry::Assistant(text.clone()))
+                }
+                2 => {
+                    harness.app.world_mut().spawn(ModelChange {
+                        turn,
+                        model: harness.model,
+                        sequence: Sequence(*sequence as u64),
+                    });
+                    (0, 4, ContextEntry::ModelChange("fake-model".into()))
+                }
+                3 => {
+                    harness.app.world_mut().spawn(Compaction {
+                        turn,
+                        summary: text.clone(),
+                        sequence: Sequence(*sequence as u64),
+                    });
+                    (0, 5, ContextEntry::Compaction(text.clone()))
+                }
+                4 => {
+                    harness.app.world_mut().spawn(Recovery {
+                        turn,
+                        text: text.clone(),
+                        sequence: Sequence(*sequence as u64),
+                    });
+                    (0, 6, ContextEntry::Recovery(text.clone()))
+                }
+                _ => unreachable!(),
+            };
+            expected.push((*sequence, id_key, kind_key, entry));
+        }
+        expected.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.cmp(&right.2))
+                .then_with(|| context_text(&left.3).cmp(context_text(&right.3)))
+        });
+        let camera = harness.app.world_mut().spawn(ContextCamera {
+            agent: harness.agent,
+            session: harness.session,
             head: Some(turn),
             budget: usize::MAX,
         }).id();
@@ -314,77 +276,8 @@ fn context_camera_orders_equal_sequence_entries_deterministically(mut app: App) 
             Ok(ContextDocument {
                 entries: expected.into_iter().map(|(_, _, _, entry)| entry).collect(),
             })
-            .id()
-    } else {
-        let camera = app.world_mut().spawn_empty().id();
-        app.world_mut().despawn(camera);
-        camera
-    };
-
-    assert_eq!(
-        project_context(app.world_mut(), camera),
-        Err(ProjectionError::MissingCamera)
-    );
-}
-
-#[rstest]
-fn context_camera_reports_a_missing_parent(mut app: App) {
-    let session = active_session(&app);
-    let agent = single_entity::<Agent>(&mut app);
-    let missing_parent = app.world_mut().spawn_empty().id();
-    app.world_mut().despawn(missing_parent);
-    let head = app
-        .world_mut()
-        .spawn(Turn {
-            id: TurnId(1),
-            session,
-            parent: Some(missing_parent),
-            sequence: Sequence(1),
-        })
-        .id();
-    let camera = app
-        .world_mut()
-        .spawn(ContextCamera {
-            agent,
-            session,
-            head: Some(head),
-            budget: 4096,
-        })
-        .id();
-
-    assert_eq!(
-        project_context(app.world_mut(), camera),
-        Err(ProjectionError::MissingTurn)
-    );
-}
-
-#[rstest]
-fn context_camera_reports_a_parent_cycle(mut app: App) {
-    let session = active_session(&app);
-    let agent = single_entity::<Agent>(&mut app);
-    let first = app.world_mut().spawn_empty().id();
-    let second = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(first).insert(Turn {
-        id: TurnId(1),
-        session,
-        parent: Some(second),
-        sequence: Sequence(1),
-    });
-    app.world_mut().entity_mut(second).insert(Turn {
-        id: TurnId(2),
-        session,
-        parent: Some(first),
-        sequence: Sequence(2),
-    });
-    let camera = app
-        .world_mut()
-        .spawn(ContextCamera {
-            agent,
-            session,
-            head: Some(first),
-            budget: 4096,
-        })
-        .id();
+        );
+    }
 
     #[test]
     fn context_budget_keeps_only_ordered_entries_that_fit(
@@ -441,6 +334,7 @@ fn transcript_projection_reports_a_missing_parent(mut app: App) {
             session,
             parent: Some(missing_parent),
             sequence: Sequence(1),
+            generation: 0,
         })
         .id();
     let camera = app
@@ -460,23 +354,24 @@ fn transcript_projection_reports_a_missing_parent(mut app: App) {
 }
 
 #[rstest]
-fn transcript_projection_reports_a_parent_cycle(mut app: App) {
-    let session = active_session(&app);
-    let first = app.world_mut().spawn_empty().id();
-    let second = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(first).insert(Turn {
-        id: TurnId(1),
-        session,
-        parent: Some(second),
-        sequence: Sequence(1),
-    });
-    app.world_mut().entity_mut(second).insert(Turn {
-        id: TurnId(2),
-        session,
-        parent: Some(first),
-        sequence: Sequence(2),
-    });
-    let camera = app
+#[case::missing_parent(
+    BrokenProjection::MissingParent,
+    "Transcript branch contains a missing Turn."
+)]
+#[case::cycle(BrokenProjection::Cycle, "Transcript branch contains a cycle.")]
+fn transcript_projection_explains_broken_branches(
+    mut harness: Harness,
+    #[case] broken: BrokenProjection,
+    #[case] message: &str,
+) {
+    let context_camera = broken_context_camera(&mut harness, broken);
+    let context = *harness
+        .app
+        .world()
+        .get::<ContextCamera>(context_camera)
+        .unwrap();
+    let transcript = harness
+        .app
         .world_mut()
         .spawn(TranscriptCamera {
             session: context.session,

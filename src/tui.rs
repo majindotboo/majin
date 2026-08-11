@@ -189,9 +189,15 @@ fn transcript_lines(items: &[TranscriptRow]) -> Vec<Line<'static>> {
 
     for item in items {
         let (title, color, body) = match item {
-            TranscriptRow::User(body) => ("YOU", Color::Cyan, body),
-            TranscriptRow::Assistant(body) => ("MAJIN", Color::Green, body),
-            TranscriptRow::Error(body) => ("ERROR", Color::Red, body),
+            TranscriptRow::User(body) => ("YOU", Color::Cyan, body.clone()),
+            TranscriptRow::Assistant(body) => ("MAJIN", Color::Green, body.clone()),
+            TranscriptRow::ToolUse { tool, input } => {
+                ("TOOL", Color::Yellow, format!("{tool}: {input}"))
+            }
+            TranscriptRow::ToolOutcome { tool, output } => {
+                ("TOOL", Color::Yellow, format!("{tool}: {output}"))
+            }
+            TranscriptRow::Error(body) => ("ERROR", Color::Red, body.clone()),
         };
         lines.push(Line::from(Span::styled(
             format!(" {title} "),
