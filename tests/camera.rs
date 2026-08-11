@@ -2,27 +2,14 @@ use bevy::prelude::*;
 use majin::{
     ActiveSession, Agent, AssistantMessage, Compaction, ContextCamera, ContextDocument,
     ContextEntry, MessageId, Model, ModelChange, ProjectionError, Recovery, SelectBranch, Sequence,
-    Session, SubmitPrompt, TranscriptCamera, TranscriptRow, Turn, TurnId, UserMessage,
-    project_context, project_transcript,
+    Session, SubmitPrompt, ToolCallId, ToolOutcome, ToolUse, TranscriptCamera, TranscriptRow, Turn,
+    TurnCompleted, TurnId, UserMessage, WorkStatus, project_context, project_transcript,
 };
 use pretty_assertions::assert_eq;
 use proptest::prelude::*;
 use rstest::rstest;
 
-use common::test_app;
-
-const FAKE_RESPONSE: &str = "Fake harness received the message. No agent is connected yet.";
-
-fn single_entity<T: Component>(app: &mut App) -> Entity {
-    app.world_mut()
-        .query_filtered::<Entity, bevy::prelude::With<T>>()
-        .single(app.world())
-        .expect("one matching entity")
-}
-
-fn active_session(app: &App) -> Entity {
-    app.world().resource::<ActiveSession>().0
-}
+pub mod common;
 
 use common::{
     ConversationPlan, ConversationStep, Harness, apply_conversation_plan, harness, prompt_text,
@@ -62,145 +49,49 @@ proptest! {
         }
     }
 
-#[test]
-fn transcript_projection_sorts_facts_by_sequence_and_id() {
-    let mut app = test_app();
-    let session = active_session(&app);
-    let turn = app
-        .world_mut()
-        .spawn(Turn {
-            id: TurnId(1),
-            session,
-            parent: None,
-            sequence: Sequence(1),
-            generation: 0,
-        })
-        .id();
-    app.world_mut().spawn(AssistantMessage {
-        id: MessageId(1),
-        turn,
-        sequence: Sequence(2),
-        text: "first".into(),
-    });
-    app.world_mut().spawn(UserMessage {
-        id: MessageId(2),
-        turn,
-        sequence: Sequence(2),
-        text: "second".into(),
-    });
-    let camera = app
-        .world_mut()
-        .spawn(TranscriptCamera {
-            session,
+    #[test]
+    fn transcript_order_is_sequence_then_id_then_kind(
+        specs in proptest::collection::vec((1u8..=8u8, prompt_text(), any::<bool>()), 1..=12)
+    ) {
+        let mut harness = Harness::disabled();
+        let turn = spawn_turn(&mut harness.app, harness.session, 1, None, 1);
+        for (index, (_, text, assistant)) in specs.iter().enumerate() {
+            if *assistant {
+                harness.app.world_mut().spawn(AssistantMessage {
+                    id: MessageId(index as u64 + 1),
+                    turn,
+                    sequence: Sequence(specs[index].0 as u64),
+                    text: text.clone(),
+                });
+            } else {
+                harness.app.world_mut().spawn(UserMessage {
+                    id: MessageId(index as u64 + 1),
+                    turn,
+                    sequence: Sequence(specs[index].0 as u64),
+                    text: text.clone(),
+                });
+            }
+        }
+        let camera = harness.app.world_mut().spawn(TranscriptCamera {
+            session: harness.session,
             head: Some(turn),
-        })
-        .id();
-
-    assert_eq!(
-        project_transcript(app.world_mut(), camera),
-        [
-            TranscriptRow::Assistant("first".into()),
-            TranscriptRow::User("second".into()),
-        ]
-    );
-}
-
-#[rstest]
-fn transcript_cameras_project_only_their_selected_branches(mut app: App) {
-    let session = active_session(&app);
-    let root = submit_prompt(&mut app, session, "root");
-    let left = submit_prompt(&mut app, session, "left");
-    SelectBranch {
-        session,
-        head: root,
+        }).id();
+        let mut expected = specs.iter().enumerate().collect::<Vec<_>>();
+        expected.sort_by_key(|(index, (sequence, _, assistant))| {
+            (*sequence, *index as u64 + 1, *assistant)
+        });
+        let expected = expected
+            .into_iter()
+            .map(|(_, (_, text, assistant))| {
+                if *assistant {
+                    TranscriptRow::Assistant(text.clone())
+                } else {
+                    TranscriptRow::User(text.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(project_transcript(harness.app.world_mut(), camera), expected);
     }
-    .apply(app.world_mut());
-    let right = submit_prompt(&mut app, session, "right");
-    let left_camera = app
-        .world_mut()
-        .spawn(TranscriptCamera {
-            session,
-            head: Some(left),
-        })
-        .id();
-    let right_camera = app
-        .world_mut()
-        .spawn(TranscriptCamera {
-            session,
-            head: Some(right),
-        })
-        .id();
-
-    assert_eq!(
-        project_transcript(app.world_mut(), left_camera),
-        [
-            TranscriptRow::User("root".into()),
-            TranscriptRow::Assistant(FAKE_RESPONSE.into()),
-            TranscriptRow::User("left".into()),
-            TranscriptRow::Assistant(FAKE_RESPONSE.into()),
-        ]
-    );
-    assert_eq!(
-        project_transcript(app.world_mut(), right_camera),
-        [
-            TranscriptRow::User("root".into()),
-            TranscriptRow::Assistant(FAKE_RESPONSE.into()),
-            TranscriptRow::User("right".into()),
-            TranscriptRow::Assistant(FAKE_RESPONSE.into()),
-        ]
-    );
-}
-
-#[rstest]
-fn context_camera_projects_only_its_selected_branch(mut app: App) {
-    let session = active_session(&app);
-    let agent = single_entity::<Agent>(&mut app);
-    let root = submit_prompt(&mut app, session, "root");
-    let left = submit_prompt(&mut app, session, "left");
-    SelectBranch {
-        session,
-        head: root,
-    }
-    .apply(app.world_mut());
-    let right = submit_prompt(&mut app, session, "right");
-    let model = single_entity::<Model>(&mut app);
-    app.world_mut().spawn(ModelChange {
-        turn: right,
-        model,
-        sequence: Sequence(3),
-    });
-    app.world_mut().spawn(Compaction {
-        turn: right,
-        summary: "excluded summary".into(),
-        sequence: Sequence(4),
-    });
-    app.world_mut().spawn(Recovery {
-        turn: right,
-        text: "excluded recovery".into(),
-        sequence: Sequence(5),
-    });
-    let camera = app
-        .world_mut()
-        .spawn(ContextCamera {
-            agent,
-            session,
-            head: Some(left),
-            budget: 4096,
-        })
-        .id();
-
-    assert_eq!(
-        project_context(app.world_mut(), camera),
-        Ok(ContextDocument {
-            entries: vec![
-                ContextEntry::User("root".into()),
-                ContextEntry::Assistant(FAKE_RESPONSE.into()),
-                ContextEntry::User("left".into()),
-                ContextEntry::Assistant(FAKE_RESPONSE.into()),
-            ],
-        })
-    );
-}
 
     #[test]
     fn context_fact_ordering_is_stable_for_generated_fact_mixes(

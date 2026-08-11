@@ -6,15 +6,12 @@ use bevy::{
 };
 use bevy_ratatui::event::{KeyMessage, MouseMessage};
 use majin::{
-    ActiveSession, AssistantMessage, SelectSession, Sequence, Session, SessionId,
-    TerminalTranscriptViewport, TranscriptCamera, TranscriptRow, TuiView, Turn, TurnId,
-    UserMessage, project_transcript,
+    ActiveSession, SelectSession, Sequence, Session, SessionId, TerminalTranscriptViewport,
+    TranscriptCamera, TranscriptRow, TuiView, Turn, TurnCompleted, TurnId, project_transcript,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
-use common::test_app;
-
-const FAKE_RESPONSE: &str = "Fake harness received the message. No agent is connected yet.";
+use common::{app, unstarted_app, update_until};
 
 fn single_entity<T: Component>(app: &mut bevy::prelude::App) -> Entity {
     app.world_mut()
@@ -62,7 +59,17 @@ fn composer_submits_a_prompt_and_advances_the_camera(mut app: App) {
         KeyModifiers::NONE,
     )));
 
-    app.update();
+    let mut completed_turn = None;
+    update_until(&mut app, |app| {
+        completed_turn = app
+            .world_mut()
+            .query::<&TurnCompleted>()
+            .iter(app.world())
+            .next()
+            .map(|outcome| outcome.turn);
+        completed_turn.is_some()
+    });
+    let turn = completed_turn.expect("fake work completed");
 
     let view = single_entity::<TuiView>(&mut app);
     assert!(
@@ -72,11 +79,6 @@ fn composer_submits_a_prompt_and_advances_the_camera(mut app: App) {
             .composer
             .is_empty()
     );
-    let turn = app
-        .world_mut()
-        .query_filtered::<Entity, With<Turn>>()
-        .single(app.world())
-        .unwrap();
     let camera = app.world().get::<TuiView>(view).unwrap().transcript_camera;
     assert_eq!(
         app.world().get::<TranscriptCamera>(camera).unwrap().head,
@@ -86,24 +88,18 @@ fn composer_submits_a_prompt_and_advances_the_camera(mut app: App) {
         project_transcript(app.world_mut(), camera),
         [
             TranscriptRow::User("quit".into()),
-            TranscriptRow::Assistant(FAKE_RESPONSE.into()),
+            TranscriptRow::Assistant("Calling fake_tool.".into()),
+            TranscriptRow::ToolUse {
+                tool: "fake_tool".into(),
+                input: "quit".into(),
+            },
+            TranscriptRow::ToolOutcome {
+                tool: "fake_tool".into(),
+                output: "Fake tool completed: quit".into(),
+            },
+            TranscriptRow::Assistant("Fake harness completed the request.".into()),
         ]
     );
-
-    let user = app
-        .world_mut()
-        .query::<&UserMessage>()
-        .single(app.world())
-        .unwrap()
-        .clone();
-    let assistant = app
-        .world_mut()
-        .query::<&AssistantMessage>()
-        .single(app.world())
-        .unwrap()
-        .clone();
-    assert_eq!(user.turn, turn);
-    assert_eq!(assistant.turn, turn);
 }
 
 #[test]

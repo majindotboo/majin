@@ -1,6 +1,5 @@
 use bevy::{ecs::system::Command, prelude::*};
 
-const FAKE_RESPONSE: &str = "Fake harness received the message. No agent is connected yet.";
 use crate::execution;
 
 pub struct HarnessPlugin;
@@ -401,24 +400,58 @@ impl Command for SubmitPrompt {
 
     fn apply(self, world: &mut World) {
         let text = self.text.trim();
-        let Some(parent) = world
-            .get::<Session>(self.session)
-            .map(|session| session.active_head)
-        else {
+        let Some(session) = world.get::<Session>(self.session).cloned() else {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::MissingSession,
+            });
             return;
         };
         if text.is_empty() {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::EmptyPrompt,
+            });
             return;
         }
-
-        let (turn_id, turn_sequence, user_id, user_sequence, assistant_id, assistant_sequence) = {
+        if session_has_active_work(world, self.session)
+            || session
+                .active_head
+                .is_some_and(|head| !turn_finished(world, head))
+        {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::ActiveTurn,
+            });
+            return;
+        }
+        let Some(active_agent) = world.get_resource::<ActiveAgent>().copied() else {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::MissingAgent,
+            });
+            return;
+        };
+        let Some((model, provider)) = (|| {
+            let agent = world.get::<Agent>(active_agent.0)?;
+            let model = world.get::<Model>(agent.model)?;
+            Some((agent.model, model.provider))
+        })() else {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::MissingAgent,
+            });
+            return;
+        };
+        let parent = session.active_head;
+        let (turn_id, turn_sequence, user_id, user_sequence, request_id, request_sequence) = {
             let mut ids = world.resource_mut::<HarnessIds>();
             (
                 ids.turn(),
                 ids.sequence(),
                 ids.message(),
                 ids.sequence(),
-                ids.message(),
+                ids.model_request(),
                 ids.sequence(),
             )
         };
@@ -437,16 +470,25 @@ impl Command for SubmitPrompt {
             sequence: user_sequence,
             text: text.to_owned(),
         });
-        world.spawn(AssistantMessage {
-            id: assistant_id,
+        world.spawn(ModelRequest {
+            id: request_id,
             turn,
-            sequence: assistant_sequence,
-            text: FAKE_RESPONSE.into(),
+            agent: active_agent.0,
+            model,
+            provider,
+            generation: 0,
+            previous_tool_use: None,
+            status: WorkStatus::Pending,
+            sequence: request_sequence,
         });
         world
             .get_mut::<Session>(self.session)
             .expect("validated session")
             .active_head = Some(turn);
+        world.write_message(CommandResult::PromptSubmitted {
+            session: self.session,
+            turn,
+        });
     }
 }
 
@@ -495,4 +537,32 @@ impl Command for SelectBranch {
             sequence,
         });
     }
+}
+
+fn session_has_active_work(world: &mut World, session: Entity) -> bool {
+    let mut requests = world.query::<&ModelRequest>();
+    if requests.iter(world).any(|request| {
+        matches!(request.status, WorkStatus::Pending | WorkStatus::Running)
+            && world
+                .get::<Turn>(request.turn)
+                .is_some_and(|turn| turn.session == session)
+    }) {
+        return true;
+    }
+    let mut tool_uses = world.query::<&ToolUse>();
+    tool_uses.iter(world).any(|tool_use| {
+        matches!(tool_use.status, WorkStatus::Pending | WorkStatus::Running)
+            && world
+                .get::<Turn>(tool_use.turn)
+                .is_some_and(|turn| turn.session == session)
+    })
+}
+
+fn turn_finished(world: &mut World, turn: Entity) -> bool {
+    let mut completed = world.query::<&TurnCompleted>();
+    let mut cancelled = world.query::<&TurnCancelled>();
+    let mut failed = world.query::<&TurnFailed>();
+    completed.iter(world).any(|outcome| outcome.turn == turn)
+        || cancelled.iter(world).any(|outcome| outcome.turn == turn)
+        || failed.iter(world).any(|outcome| outcome.turn == turn)
 }
