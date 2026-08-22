@@ -1,4 +1,7 @@
-use bevy::{ecs::system::Command, prelude::*};
+use bevy::{
+    ecs::{entity::MapEntities, reflect::ReflectMapEntities, system::Command},
+    prelude::*,
+};
 
 use crate::execution;
 
@@ -11,92 +14,110 @@ impl Plugin for HarnessPlugin {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct ProviderId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct ToolId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct SessionId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct TurnId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct ModelRequestId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 pub struct ToolCallId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect)]
 pub struct MessageId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect)]
 pub struct Sequence(pub u64);
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Agent {
+    #[entities]
     pub model: Entity,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct Provider {
     pub provider_id: ProviderId,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Model {
+    #[entities]
     pub provider: Entity,
     pub model_id: String,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect)]
+#[reflect(Component)]
 pub struct ToolDefinition {
     pub tool_id: ToolId,
     pub name: String,
     pub description: String,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct AgentTool {
+    #[entities]
     pub agent: Entity,
+    #[entities]
     pub tool: Entity,
     pub order: u32,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Session {
     pub id: SessionId,
+    #[entities]
     pub active_head: Option<Entity>,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Turn {
     pub id: TurnId,
+    #[entities]
     pub session: Entity,
+    #[entities]
     pub parent: Option<Entity>,
     pub sequence: Sequence,
     pub generation: u64,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct UserMessage {
     pub id: MessageId,
+    #[entities]
     pub turn: Entity,
     pub sequence: Sequence,
     pub text: String,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct AssistantMessage {
     pub id: MessageId,
+    #[entities]
     pub turn: Entity,
     pub sequence: Sequence,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum WorkStatus {
     Pending,
     Running,
@@ -105,25 +126,36 @@ pub enum WorkStatus {
     Cancelled,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ModelRequest {
     pub id: ModelRequestId,
+    #[entities]
     pub turn: Entity,
+    #[entities]
     pub agent: Entity,
+    #[entities]
     pub model: Entity,
+    #[entities]
     pub provider: Entity,
     pub generation: u64,
+    #[entities]
     pub previous_tool_use: Option<Entity>,
     pub status: WorkStatus,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ModelResponse {
+    #[entities]
     pub request: Entity,
+    #[entities]
     pub turn: Entity,
+    #[entities]
     pub model: Entity,
     pub generation: u64,
+    #[entities]
     pub provider: Entity,
     pub response_id: String,
     pub api: ModelApi,
@@ -133,18 +165,18 @@ pub struct ModelResponse {
     pub sequence: Sequence,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum ModelStopReason {
     ToolUse,
     Complete,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum ModelApi {
     Fake,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 pub struct ModelUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -161,13 +193,19 @@ pub struct ModelOutput {
     pub opaque_replay: String,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ToolUse {
     pub id: ToolCallId,
+    #[entities]
     pub turn: Entity,
+    #[entities]
     pub agent: Entity,
+    #[entities]
     pub tool: Entity,
+    #[entities]
     pub model: Entity,
+    #[entities]
     pub provider: Entity,
     pub generation: u64,
     pub input: String,
@@ -175,85 +213,120 @@ pub struct ToolUse {
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ToolOutcome {
+    #[entities]
     pub tool_use: Entity,
     pub tool_call_id: ToolCallId,
+    #[entities]
     pub turn: Entity,
     pub generation: u64,
     pub output: String,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct TurnCompleted {
+    #[entities]
     pub turn: Entity,
     pub generation: u64,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct TurnCancelled {
+    #[entities]
     pub turn: Entity,
     pub generation: u64,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
+pub struct TurnInterrupted {
+    #[entities]
+    pub turn: Entity,
+    pub generation: u64,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct TurnFailed {
+    #[entities]
     pub turn: Entity,
     pub generation: u64,
     pub failure: TurnFailure,
     pub sequence: Sequence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Reflect)]
 pub enum TurnFailure {
     Provider(ProviderFailure),
     Tool(ToolFailure),
     Recovery(RecoveryFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct ProviderFailure {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct ToolFailure {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct RecoveryFailure {
     pub message: String,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct BranchSelection {
+    #[entities]
     pub session: Entity,
+    #[entities]
     pub head: Entity,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ModelChange {
+    #[entities]
     pub turn: Entity,
+    #[entities]
     pub model: Entity,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Compaction {
+    #[entities]
     pub turn: Entity,
     pub summary: String,
     pub sequence: Sequence,
 }
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct Recovery {
+    #[entities]
     pub turn: Entity,
     pub text: String,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone, Reflect)]
+#[reflect(Component)]
+pub struct PersistenceFailure {
+    pub message: String,
     pub sequence: Sequence,
 }
 
@@ -262,6 +335,9 @@ pub struct ActiveSession(pub Entity);
 
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ActiveAgent(pub Entity);
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct HarnessReady;
 
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub enum CommandResult {
@@ -337,7 +413,8 @@ pub struct ToolResult {
     pub result: Result<String, ToolFailure>,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub(crate) struct HarnessIds {
     next_turn: u64,
     next_message: u64,

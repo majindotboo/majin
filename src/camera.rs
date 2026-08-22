@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::{entity::MapEntities, reflect::ReflectMapEntities, system::SystemParam},
+    prelude::*,
+};
 
 use crate::harness::{
     AssistantMessage, Compaction, Model, ModelChange, Recovery, Sequence, ToolDefinition,
@@ -28,13 +31,21 @@ pub enum TranscriptRow {
     Error(String),
 }
 
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy, Reflect, MapEntities)]
+#[reflect(Component, MapEntities)]
 pub struct ContextCamera {
+    #[entities]
     pub agent: Entity,
+    #[entities]
     pub session: Entity,
+    #[entities]
     pub head: Option<Entity>,
     pub budget: usize,
 }
+
+#[derive(Component, Debug, Clone, Copy, Default, Reflect)]
+#[reflect(Component)]
+pub struct PersistentContextCamera;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextDocument {
