@@ -377,6 +377,7 @@ pub enum CommandResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandFailure {
+    HarnessNotReady,
     EmptyPrompt,
     MissingSession,
     MissingAgent,
@@ -476,6 +477,13 @@ impl Command for SubmitPrompt {
     type Out = ();
 
     fn apply(self, world: &mut World) {
+        if !world.contains_resource::<HarnessReady>() {
+            world.write_message(CommandResult::PromptRejected {
+                session: self.session,
+                failure: CommandFailure::HarnessNotReady,
+            });
+            return;
+        }
         let text = self.text.trim();
         let Some(session) = world.get::<Session>(self.session).cloned() else {
             world.write_message(CommandResult::PromptRejected {
@@ -562,6 +570,7 @@ impl Command for SubmitPrompt {
             .get_mut::<Session>(self.session)
             .expect("validated session")
             .active_head = Some(turn);
+        execution::sync_persistent_context_camera(world, active_agent.0, self.session, Some(turn));
         world.write_message(CommandResult::PromptSubmitted {
             session: self.session,
             turn,
@@ -577,6 +586,13 @@ impl Command for InterruptTurn {
     type Out = ();
 
     fn apply(self, world: &mut World) {
+        if !world.contains_resource::<HarnessReady>() {
+            world.write_message(CommandResult::InterruptRejected {
+                turn: self.turn,
+                failure: CommandFailure::HarnessNotReady,
+            });
+            return;
+        }
         let Some(turn) = world.get::<Turn>(self.turn).cloned() else {
             world.write_message(CommandResult::InterruptRejected {
                 turn: self.turn,
@@ -665,6 +681,13 @@ impl Command for SelectSession {
     type Out = ();
 
     fn apply(self, world: &mut World) {
+        if !world.contains_resource::<HarnessReady>() {
+            world.write_message(CommandResult::SessionRejected {
+                session: self.session,
+                failure: CommandFailure::HarnessNotReady,
+            });
+            return;
+        }
         if world.get::<Session>(self.session).is_some() {
             world.insert_resource(ActiveSession(self.session));
             world.write_message(CommandResult::SessionSelected {
@@ -688,6 +711,14 @@ impl Command for SelectBranch {
     type Out = ();
 
     fn apply(self, world: &mut World) {
+        if !world.contains_resource::<HarnessReady>() {
+            world.write_message(CommandResult::BranchRejected {
+                session: self.session,
+                head: self.head,
+                failure: CommandFailure::HarnessNotReady,
+            });
+            return;
+        }
         let Some(turn) = world.get::<Turn>(self.head) else {
             world.write_message(CommandResult::BranchRejected {
                 session: self.session,
@@ -717,6 +748,14 @@ impl Command for SelectBranch {
             .get_mut::<Session>(self.session)
             .expect("validated session")
             .active_head = Some(self.head);
+        if let Some(agent) = world.get_resource::<ActiveAgent>().copied() {
+            execution::sync_persistent_context_camera(
+                world,
+                agent.0,
+                self.session,
+                Some(self.head),
+            );
+        }
         world.spawn(BranchSelection {
             session: self.session,
             head: self.head,
@@ -752,7 +791,9 @@ fn turn_finished(world: &mut World, turn: Entity) -> bool {
     let mut completed = world.query::<&TurnCompleted>();
     let mut cancelled = world.query::<&TurnCancelled>();
     let mut failed = world.query::<&TurnFailed>();
+    let mut interrupted = world.query::<&TurnInterrupted>();
     completed.iter(world).any(|outcome| outcome.turn == turn)
         || cancelled.iter(world).any(|outcome| outcome.turn == turn)
         || failed.iter(world).any(|outcome| outcome.turn == turn)
+        || interrupted.iter(world).any(|outcome| outcome.turn == turn)
 }

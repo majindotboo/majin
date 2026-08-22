@@ -10,7 +10,10 @@ use bevy::prelude::*;
 use crate::{MajinSet, MajinStartupSet, PersistenceFailure, SessionId};
 
 mod atomic;
+mod recovery;
 use atomic::persist;
+use recovery::recover;
+
 pub struct PersistencePlugin;
 
 impl Plugin for PersistencePlugin {
@@ -42,6 +45,7 @@ impl Plugin for PersistencePlugin {
             .register_type::<TurnFailed>()
             .register_type::<TurnInterrupted>()
             .register_type::<UserMessage>()
+            .add_systems(Startup, recover.in_set(crate::MajinStartupSet::Recover))
             .add_systems(Update, persist.in_set(MajinSet::Persist));
     }
 }
@@ -94,9 +98,34 @@ fn default_path() -> Option<PathBuf> {
 }
 
 #[derive(Resource, Default)]
-struct PersistenceState {
-    last_snapshot: Option<String>,
-    dirty_since: Option<Instant>,
-    blocked: bool,
-    last_failure: Option<String>,
+pub(super) struct PersistenceState {
+    pub(super) last_values: HashMap<String, String>,
+    pub(super) next_ordinals: HashMap<SessionId, u64>,
+    pub(super) dirty_since: Option<Instant>,
+    pub(super) blocked: bool,
+    pub(super) pending_failure: Option<String>,
+    pub(super) last_failure: Option<String>,
+}
+
+pub(super) fn session_path(root: &std::path::Path, session: SessionId) -> PathBuf {
+    root.join(format!("session-{}.jsonl", session.0))
+}
+
+pub(super) fn record_failure(world: &mut World, message: String) {
+    let should_record = {
+        let mut state = world.resource_mut::<PersistenceState>();
+        if state.last_failure.as_deref() == Some(message.as_str()) {
+            false
+        } else {
+            state.last_failure = Some(message.clone());
+            true
+        }
+    };
+    if should_record {
+        let sequence = world
+            .get_resource_mut::<crate::harness::HarnessIds>()
+            .map(|mut ids| ids.sequence())
+            .unwrap_or(crate::Sequence(0));
+        world.spawn(PersistenceFailure { message, sequence });
+    }
 }
