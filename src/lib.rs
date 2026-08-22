@@ -22,7 +22,7 @@ pub use harness::{
     ToolResult, ToolUse, Turn, TurnCancelled, TurnCompleted, TurnFailed, TurnFailure, TurnId,
     TurnInterrupted, UserMessage, WorkStatus,
 };
-pub use persistence::PersistencePlugin;
+pub use persistence::{PersistenceConfig, PersistencePlugin};
 pub use tui::{TerminalTranscriptViewport, TuiPlugin, TuiView};
 
 pub fn run() {
@@ -54,6 +54,8 @@ pub enum MajinSet {
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum MajinStartupSet {
     Harness,
+    Hydrate,
+    Recover,
     Tui,
 }
 
@@ -63,7 +65,13 @@ impl Plugin for MajinPlugin {
     fn build(&self, app: &mut App) {
         app.configure_sets(
             Startup,
-            (MajinStartupSet::Harness, MajinStartupSet::Tui).chain(),
+            (
+                MajinStartupSet::Harness,
+                MajinStartupSet::Hydrate,
+                MajinStartupSet::Recover,
+                MajinStartupSet::Tui,
+            )
+                .chain(),
         );
         app.configure_sets(
             Update,
