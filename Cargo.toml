@@ -6,5 +6,5 @@ rust-version = "1.95"
 
 [dependencies]
 bevy = { version = "0.19", default-features = false, features = ["std", "async_executor"] }
-bevy_ratatui = { path = "vendor/bevy_ratatui" }
+bevy_ratatui = { git = "https://github.com/ratatui/bevy_ratatui.git", rev = "a9524d78c168af62c33f893af3389e3c63a54c06" }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
