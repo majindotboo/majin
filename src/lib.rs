@@ -8,11 +8,14 @@ use std::time::Duration;
 use bevy::{app::ScheduleRunnerPlugin, prelude::*};
 use bevy_ratatui::RatatuiPlugins;
 
-pub use camera::{CameraPlugin, TranscriptCamera, TranscriptRow, project_transcript};
+pub use camera::{
+    CameraPlugin, ContextCamera, ContextDocument, ContextEntry, ProjectionError, TranscriptCamera,
+    TranscriptRow, project_context, project_transcript,
+};
 pub use harness::{
-    ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection, HarnessPlugin, MessageId,
-    Model, Provider, ProviderId, SelectBranch, SelectSession, Sequence, Session, SessionId,
-    SubmitPrompt, ToolDefinition, ToolId, Turn, TurnId, UserMessage,
+    ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection, Compaction, HarnessPlugin,
+    MessageId, Model, ModelChange, Provider, ProviderId, Recovery, SelectBranch, SelectSession,
+    Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, ToolId, Turn, TurnId, UserMessage,
 };
 pub use persistence::PersistencePlugin;
 pub use tui::{TerminalTranscriptViewport, TuiPlugin, TuiView};
