@@ -1,12 +1,12 @@
 mod camera;
+mod execution;
 mod harness;
 mod persistence;
 mod tui;
 
-use std::time::Duration;
-
-use bevy::{app::ScheduleRunnerPlugin, prelude::*};
-use bevy_ratatui::RatatuiPlugins;
+pub(crate) use app::MajinStartupSet;
+pub use app::{MajinPlugin, MajinSet, run};
+pub(crate) use camera::project_context_for;
 
 pub use camera::{
     CameraPlugin, ContextCamera, ContextDocument, ContextEntry, ProjectionError, TranscriptCamera,

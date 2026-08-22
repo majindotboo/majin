@@ -1,14 +1,14 @@
 use bevy::{ecs::system::Command, prelude::*};
 
-use crate::MajinStartupSet;
-
 const FAKE_RESPONSE: &str = "Fake harness received the message. No agent is connected yet.";
+use crate::execution;
 
 pub struct HarnessPlugin;
 
 impl Plugin for HarnessPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, register_harness.in_set(MajinStartupSet::Harness));
+        app.add_message::<CommandResult>();
+        execution::configure(app);
     }
 }
 
@@ -342,6 +342,8 @@ pub struct ToolResult {
 pub(crate) struct HarnessIds {
     next_turn: u64,
     next_message: u64,
+    next_model_request: u64,
+    next_tool_call: u64,
     next_sequence: u64,
 }
 
@@ -350,25 +352,39 @@ impl Default for HarnessIds {
         Self {
             next_turn: 1,
             next_message: 1,
+            next_model_request: 1,
+            next_tool_call: 1,
             next_sequence: 1,
         }
     }
 }
 
 impl HarnessIds {
-    fn turn(&mut self) -> TurnId {
+    pub(crate) fn turn(&mut self) -> TurnId {
         let id = TurnId(self.next_turn);
         self.next_turn += 1;
         id
     }
 
-    fn message(&mut self) -> MessageId {
+    pub(crate) fn message(&mut self) -> MessageId {
         let id = MessageId(self.next_message);
         self.next_message += 1;
         id
     }
 
-    fn sequence(&mut self) -> Sequence {
+    pub(crate) fn model_request(&mut self) -> ModelRequestId {
+        let id = ModelRequestId(self.next_model_request);
+        self.next_model_request += 1;
+        id
+    }
+
+    pub(crate) fn tool_call(&mut self) -> ToolCallId {
+        let id = ToolCallId(self.next_tool_call);
+        self.next_tool_call += 1;
+        id
+    }
+
+    pub(crate) fn sequence(&mut self) -> Sequence {
         let sequence = Sequence(self.next_sequence);
         self.next_sequence += 1;
         sequence
@@ -479,40 +495,4 @@ impl Command for SelectBranch {
             sequence,
         });
     }
-}
-
-fn register_harness(world: &mut World) {
-    let provider = world
-        .spawn(Provider {
-            provider_id: ProviderId(1),
-        })
-        .id();
-    let model = world
-        .spawn(Model {
-            provider,
-            model_id: "fake-model".into(),
-        })
-        .id();
-    let tool = world
-        .spawn(ToolDefinition {
-            tool_id: ToolId(1),
-            name: "fake_tool".into(),
-            description: "Temporary fake tool capability.".into(),
-        })
-        .id();
-    let agent = world.spawn(Agent { model }).id();
-    world.spawn(AgentTool {
-        agent,
-        tool,
-        order: 0,
-    });
-    let session = world
-        .spawn(Session {
-            id: SessionId(1),
-            active_head: None,
-        })
-        .id();
-
-    world.insert_resource(HarnessIds::default());
-    world.insert_resource(ActiveSession(session));
 }
