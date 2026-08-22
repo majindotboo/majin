@@ -28,7 +28,7 @@ impl Plugin for TuiPlugin {
                 Update,
                 (handle_input, handle_mouse_input).in_set(MajinSet::Input),
             )
-            .add_systems(Update, sync_active_session.in_set(MajinSet::Project))
+            .add_systems(Update, sync_transcript_camera.in_set(MajinSet::Project))
             .add_systems(
                 Update,
                 draw.in_set(MajinSet::Render)
@@ -50,9 +50,13 @@ pub struct TerminalTranscriptViewport {
 
 fn spawn_tui_view(world: &mut World) {
     let session = world.resource::<ActiveSession>().0;
+    let head = world
+        .get::<Session>(session)
+        .expect("active session")
+        .active_head;
     let camera = world
         .spawn((
-            TranscriptCamera { session },
+            TranscriptCamera { session, head },
             TerminalTranscriptViewport::default(),
         ))
         .id();
@@ -160,19 +164,23 @@ fn scroll_down(
     }
 }
 
-fn sync_active_session(
+fn sync_transcript_camera(
     active_session: Res<ActiveSession>,
+    sessions: Query<&Session>,
     views: Query<&TuiView>,
     mut cameras: Query<&mut TranscriptCamera>,
 ) {
-    if !active_session.is_changed() {
-        return;
-    }
     let Ok(ui) = views.single() else {
         return;
     };
-    if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera) {
+    let Ok(session) = sessions.get(active_session.0) else {
+        return;
+    };
+    if let Ok(mut camera) = cameras.get_mut(ui.transcript_camera)
+        && (camera.session != active_session.0 || camera.head != session.active_head)
+    {
         camera.session = active_session.0;
+        camera.head = session.active_head;
     }
 }
 
@@ -183,6 +191,7 @@ fn transcript_lines(items: &[TranscriptRow]) -> Vec<Line<'static>> {
         let (title, color, body) = match item {
             TranscriptRow::User(body) => ("YOU", Color::Cyan, body),
             TranscriptRow::Assistant(body) => ("MAJIN", Color::Green, body),
+            TranscriptRow::Error(body) => ("ERROR", Color::Red, body),
         };
         lines.push(Line::from(Span::styled(
             format!(" {title} "),

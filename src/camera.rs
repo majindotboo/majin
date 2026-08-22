@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::{ecs::system::SystemParam, prelude::*};
 
@@ -13,12 +13,14 @@ impl Plugin for CameraPlugin {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TranscriptCamera {
     pub session: Entity,
+    pub head: Option<Entity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranscriptRow {
     User(String),
     Assistant(String),
+    Error(String),
 }
 
 #[derive(SystemParam)]
@@ -61,26 +63,60 @@ fn project_transcript_parts<'a>(
     users: impl Iterator<Item = &'a UserMessage>,
     assistants: impl Iterator<Item = &'a AssistantMessage>,
 ) -> Vec<TranscriptRow> {
-    let session_turns: HashSet<_> = turns
-        .filter_map(|(entity, turn)| (turn.session == camera.session).then_some(entity))
+    let turns: HashMap<_, _> = turns.collect();
+    let mut branch = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = camera.head;
+
+    while let Some(entity) = current {
+        let Some(turn) = turns.get(&entity) else {
+            return vec![TranscriptRow::Error(
+                "Transcript branch contains a missing Turn.".into(),
+            )];
+        };
+        if turn.session != camera.session {
+            return vec![TranscriptRow::Error(
+                "Transcript branch crosses into another Session.".into(),
+            )];
+        }
+        if !seen.insert(entity) {
+            return vec![TranscriptRow::Error(
+                "Transcript branch contains a cycle.".into(),
+            )];
+        }
+        branch.push(entity);
+        current = turn.parent;
+    }
+    branch.reverse();
+
+    let branch: HashMap<_, _> = branch
+        .into_iter()
+        .enumerate()
+        .map(|(order, entity)| (entity, order))
         .collect();
     let mut items = Vec::new();
 
     items.extend(users.filter_map(|message| {
-        session_turns.contains(&message.turn).then_some((
-            message.sequence,
-            message.id,
-            TranscriptRow::User(message.text.clone()),
-        ))
+        branch.get(&message.turn).map(|order| {
+            (
+                *order,
+                message.sequence,
+                message.id,
+                TranscriptRow::User(message.text.clone()),
+            )
+        })
     }));
     items.extend(assistants.filter_map(|message| {
-        session_turns.contains(&message.turn).then_some((
-            message.sequence,
-            message.id,
-            TranscriptRow::Assistant(message.text.clone()),
-        ))
+        branch.get(&message.turn).map(|order| {
+            (
+                *order,
+                message.sequence,
+                message.id,
+                TranscriptRow::Assistant(message.text.clone()),
+            )
+        })
     }));
-    items.sort_by_key(|(Sequence(sequence), MessageId(id), _)| (*sequence, *id));
+    items.sort_by_key(|(order, Sequence(sequence), MessageId(id), _)| (*order, *sequence, *id));
 
-    items.into_iter().map(|(_, _, item)| item).collect()
+    items.into_iter().map(|(_, _, _, item)| item).collect()
 }
