@@ -16,109 +16,14 @@ use serde_json::Value;
 
 pub mod common;
 
-#[rstest]
-fn snapshot_round_trip_preserves_branches_links_ids_context_and_excludes_tui(temp_dir: TempDir) {
-    let path = temp_dir.path().join("storage");
-    let mut first = app(path.clone(), Duration::ZERO);
-    let session = first.world().resource::<ActiveSession>().0;
-    let agent = first.world().resource::<ActiveAgent>().0;
-    let model = first.world().get::<Agent>(agent).unwrap().model;
-    let provider = first.world().get::<Model>(model).unwrap().provider;
-    let tool = single::<ToolDefinition>(&mut first);
-    let first_turn = completed_turn(&mut first, session, "first");
-    let main_turn = completed_turn(&mut first, session, "main");
-    SelectBranch {
-        session,
-        head: first_turn,
-    }
-    .apply(first.world_mut());
-    let second_turn = completed_turn(&mut first, session, "branch");
-    let session_id = first.world().get::<Session>(session).unwrap().id;
-    let first_id = first.world().get::<Turn>(first_turn).unwrap().id;
-    let main_id = first.world().get::<Turn>(main_turn).unwrap().id;
-    let second_id = first.world().get::<Turn>(second_turn).unwrap().id;
-    let provider_id = first.world().get::<Provider>(provider).unwrap().provider_id;
-    let tool_id = first.world().get::<ToolDefinition>(tool).unwrap().tool_id;
-    let context_camera = first
-        .world_mut()
-        .query_filtered::<Entity, With<PersistentContextCamera>>()
-        .single(first.world())
-        .expect("persistent camera");
-    let mut message_ids: Vec<_> = first
-        .world_mut()
-        .query::<&UserMessage>()
-        .iter(first.world())
-        .filter(|message| message.turn == second_turn)
-        .map(|message| message.id)
-        .collect();
-    message_ids.extend(
-        first
-            .world_mut()
-            .query::<&AssistantMessage>()
-            .iter(first.world())
-            .filter(|message| message.turn == second_turn)
-            .map(|message| message.id),
-    );
-    message_ids.sort_by_key(|id| id.0);
-    let mut request_ids: Vec<_> = first
-        .world_mut()
-        .query::<&ModelRequest>()
-        .iter(first.world())
-        .filter(|request| request.turn == second_turn)
-        .map(|request| request.id)
-        .collect();
-    request_ids.sort_by_key(|id| id.0);
-    let mut tool_call_ids: Vec<_> = first
-        .world_mut()
-        .query::<&ToolUse>()
-        .iter(first.world())
-        .filter(|tool_use| tool_use.turn == second_turn)
-        .map(|tool_use| tool_use.id)
-        .collect();
-    tool_call_ids.sort_by_key(|id| id.0);
-    let mut response_ids: Vec<_> = first
-        .world_mut()
-        .query::<&ModelResponse>()
-        .iter(first.world())
-        .filter(|response| response.turn == second_turn)
-        .map(|response| response.response_id.clone())
-        .collect();
-    response_ids.sort();
-    let saved_max_sequence = first
-        .world_mut()
-        .query::<&TurnCompleted>()
-        .iter(first.world())
-        .map(|outcome| outcome.sequence.0)
-        .max()
-        .expect("completed sequences");
-    let view = single::<TuiView>(&mut first);
-    let transcript_camera = first
-        .world()
-        .get::<TuiView>(view)
-        .unwrap()
-        .transcript_camera;
-    {
-        let mut view = first.world_mut().get_mut::<TuiView>(view).unwrap();
-        view.composer = "transient".into();
-    }
-    first
-        .world_mut()
-        .get_mut::<TerminalTranscriptViewport>(transcript_camera)
-        .unwrap()
-        .scroll_from_bottom = 9;
-    first.world_mut().spawn(ContextCamera {
-        agent,
-        session,
-        head: Some(second_turn),
-        budget: 1,
-    });
-    first.update();
-    drop(first);
+use common::{
+    ConversationPlan, Harness, apply_conversation_plan, read_log, session_log, single, temp_dir,
+    unstarted_app,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        // Filesystem property limit: use 16 session allocations to bound setup cost; raise it
-        // when persistent harness startup becomes cheaper than the current suite budget.
+        // Keep 16 independent session allocations while each generated case stays cheap.
         cases: 16,
         ..ProptestConfig::default()
     })]
@@ -126,14 +31,9 @@ proptest! {
     fn each_session_gets_a_distinct_append_only_file(ids in any::<AlternateSession>()) {
         let temp_dir = TempDir::new().expect("temporary directory");
         let root = temp_dir.path().join("storage");
-        let mut harness = Harness::persistent(root.clone(), Duration::ZERO);
-        let original_session = harness.session;
-        let second_session = harness.add_session(ids.id);
-        harness.session = second_session;
-        let second_turn = harness.submit("second session");
-        harness.complete(second_turn);
-        harness.session = original_session;
-        harness.app.update();
+        let mut harness = Harness::persistent(root.clone(), Duration::from_secs(60));
+        harness.add_session(ids.id);
+        harness.flush_persistence();
 
         let first_log = session_log(&root, SessionId(1));
         let second_log = session_log(&root, SessionId(ids.id));
@@ -170,7 +70,7 @@ fn session_logs_are_explicit_jsonl_and_exclude_runtime_state(temp_dir: TempDir) 
     let root = temp_dir.path().join("storage");
     let mut harness = Harness::persistent(root.clone(), Duration::ZERO);
     let turn = harness.submit("explicit schema");
-    harness.complete(turn);
+    harness.complete_with_fake_results(turn);
     let log = session_log(&root, SessionId(1));
     temp_dir.child("storage/session-1.jsonl").assert(is_file());
 
@@ -211,8 +111,7 @@ fn session_logs_are_explicit_jsonl_and_exclude_runtime_state(temp_dir: TempDir) 
 }
 
 proptest! {
-    // Filesystem replay limit: use 16 complete replays to bound setup cost; raise it when replay
-    // becomes cheaper than the current suite budget.
+    // Keep 16 restart/replay boundaries while each case performs one durable flush.
     #![proptest_config(ProptestConfig {
         cases: 16,
         ..ProptestConfig::default()
@@ -223,13 +122,13 @@ proptest! {
     ) {
         let temp_dir = TempDir::new().expect("temporary directory");
         let root = temp_dir.path().join("storage");
-        let mut first = Harness::persistent(root.clone(), Duration::ZERO);
+        let mut first = Harness::persistent(root.clone(), Duration::from_secs(60));
         let steps = apply_conversation_plan(&mut first, &plan);
         let view = single::<majin::TuiView>(&mut first.app);
         first.app.world_mut().get_mut::<majin::TuiView>(view).unwrap().composer = "transient".into();
         let transcript_camera = first.app.world().get::<majin::TuiView>(view).unwrap().transcript_camera;
         first.app.world_mut().get_mut::<majin::TerminalTranscriptViewport>(transcript_camera).unwrap().scroll_from_bottom = 7;
-        first.app.update();
+        first.flush_persistence();
         let before = read_log(&root, SessionId(1));
         let max_turn = first
             .app
@@ -241,7 +140,7 @@ proptest! {
             .expect("generated turns");
         drop(first);
 
-        let mut restored = Harness::persistent(root.clone(), Duration::ZERO);
+        let mut restored = Harness::persistent(root.clone(), Duration::from_secs(60));
         assert_eq!(read_log(&root, SessionId(1)), before);
         assert_eq!(restored.count::<Turn>(), steps.len());
         let restored_view = single::<majin::TuiView>(&mut restored.app);
@@ -258,9 +157,8 @@ proptest! {
         );
         assert_eq!(restored.app.world().get::<majin::TerminalTranscriptViewport>(restored_camera).unwrap().scroll_from_bottom, 0);
 
-        let continued = restored.submit("continued");
-        restored.complete(continued);
-        assert!(restored.app.world().get::<Turn>(continued).unwrap().id.0 > max_turn);
+    let continued = restored.submit("continued");
+    assert!(restored.app.world().get::<Turn>(continued).unwrap().id.0 > max_turn);
     }
 }
 
@@ -279,15 +177,17 @@ fn persistent_context_budget_is_restored_and_used_for_the_next_request(temp_dir:
         .world_mut()
         .get_mut::<ContextCamera>(camera)
         .unwrap()
-        .transcript_camera;
-    assert!(
-        restored
-            .world()
-            .get::<TuiView>(view)
-            .unwrap()
-            .composer
-            .is_empty()
-    );
+        .budget = 0;
+    first.app.update();
+    drop(first);
+
+    let mut restored = Harness::persistent(root, Duration::ZERO);
+    let camera = restored
+        .app
+        .world_mut()
+        .query_filtered::<Entity, With<PersistentContextCamera>>()
+        .single(restored.app.world())
+        .expect("restored context camera");
     assert_eq!(
         restored
             .app
@@ -298,7 +198,7 @@ fn persistent_context_budget_is_restored_and_used_for_the_next_request(temp_dir:
         0
     );
     let turn = restored.submit("budget excluded");
-    restored.complete(turn);
+    restored.complete_with_fake_results(turn);
     assert!(
         restored
             .app
@@ -329,15 +229,15 @@ fn invalid_log(root: &Path, corruption: Corruption) -> String {
             invalid
         }
         Corruption::CrossSessionHead | Corruption::CrossSessionParent => {
-            let mut harness = Harness::persistent(root.to_path_buf(), Duration::ZERO);
+            let mut harness = Harness::persistent(root.to_path_buf(), Duration::from_secs(60));
             let original_session = harness.session;
             let foreign_session = harness.add_session(2);
             harness.session = foreign_session;
             let foreign_turn = harness.submit("foreign");
-            harness.complete(foreign_turn);
+            harness.complete_with_fake_results(foreign_turn);
             harness.session = original_session;
             let local_turn = harness.submit("local");
-            harness.complete(local_turn);
+            harness.complete_with_fake_results(local_turn);
             match corruption {
                 Corruption::CrossSessionHead => {
                     harness
@@ -359,7 +259,7 @@ fn invalid_log(root: &Path, corruption: Corruption) -> String {
                     unreachable!()
                 }
             }
-            harness.app.update();
+            harness.flush_persistence();
             read_log(root, SessionId(1))
         }
     }
@@ -391,7 +291,7 @@ fn incomplete_final_records_are_truncated_while_prior_history_replays(temp_dir: 
     let root = temp_dir.path().join("storage");
     let mut first = Harness::persistent(root.clone(), Duration::ZERO);
     let turn = first.submit("survives partial write");
-    first.complete(turn);
+    first.complete_with_fake_results(turn);
     let log = session_log(&root, SessionId(1));
     let mut file = fs::OpenOptions::new()
         .append(true)

@@ -21,8 +21,10 @@ impl Plugin for PersistencePlugin {
         app.init_resource::<PersistenceConfig>()
             .init_resource::<PersistenceState>()
             .add_systems(Startup, replay::hydrate.in_set(MajinStartupSet::Hydrate))
-            .add_systems(Startup, recovery::recover.in_set(MajinStartupSet::Recover))
-            .add_systems(Update, log::persist.in_set(MajinSet::Persist));
+            .add_systems(Startup, recovery::recover.in_set(MajinStartupSet::Recover));
+        if app.world().resource::<PersistenceConfig>().enabled {
+            app.add_systems(Update, log::persist.in_set(MajinSet::Persist));
+        }
     }
 }
 

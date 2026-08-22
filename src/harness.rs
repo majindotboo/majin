@@ -9,7 +9,8 @@ pub struct HarnessPlugin;
 
 impl Plugin for HarnessPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<CommandResult>();
+        app.add_message::<CommandResult>()
+            .init_resource::<HarnessIds>();
         execution::configure(app);
     }
 }

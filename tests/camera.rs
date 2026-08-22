@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use majin::{
-    AssistantMessage, Compaction, ContextCamera, ContextDocument, ContextEntry, MessageId,
-    ModelChange, ModelRequest, PersistenceFailure, ProjectionError, ProviderFailure, Recovery,
-    RecoveryFailure, Sequence, ToolFailure, ToolUse, TranscriptCamera, TranscriptRow,
+    Agent, AssistantMessage, Compaction, ContextCamera, ContextDocument, ContextEntry, MessageId,
+    Model, ModelChange, ModelRequest, PersistenceFailure, ProjectionError, Provider,
+    ProviderFailure, Recovery, RecoveryFailure, Sequence, Session, SessionId, ToolCallId,
+    ToolDefinition, ToolFailure, ToolOutcome, ToolUse, TranscriptCamera, TranscriptRow,
     TranscriptWork, Turn, TurnFailure, TurnId, TurnInterrupted, UserMessage, WorkStatus,
     project_context, project_transcript,
 };
@@ -12,41 +13,44 @@ use rstest::rstest;
 
 pub mod common;
 
-use common::{
-    ConversationPlan, ConversationStep, Harness, apply_conversation_plan, harness, prompt_text,
-};
+use common::{ConversationPlan, Harness, harness, prompt_text};
 
 proptest! {
     #[test]
     fn selected_cameras_project_only_their_ancestral_facts(plan in any::<ConversationPlan>()) {
-        let mut harness = Harness::disabled();
-        let steps = apply_conversation_plan(&mut harness, &plan);
+        let mut fixture = projection_fixture(&plan);
+        let transcript_camera = fixture.world.spawn(TranscriptCamera {
+            session: fixture.session,
+            head: None,
+        }).id();
+        let context_camera = fixture.world.spawn(ContextCamera {
+            agent: fixture.agent,
+            session: fixture.session,
+            head: None,
+            budget: usize::MAX,
+        }).id();
 
-        for step in &steps {
-            let expected = expected_branch_texts(step.turn, &steps);
-            let transcript_camera = harness.app.world_mut().spawn(TranscriptCamera {
-                session: harness.session,
-                head: Some(step.turn),
-            }).id();
-            let transcript = project_transcript(harness.app.world_mut(), transcript_camera)
-                .into_iter()
-                .map(transcript_text)
-                .collect::<Vec<_>>();
-            assert_eq!(transcript, expected);
-
-            let context_camera = harness.app.world_mut().spawn(ContextCamera {
-                agent: harness.agent,
-                session: harness.session,
-                head: Some(step.turn),
-                budget: usize::MAX,
-            }).id();
-            let context_users = project_context(harness.app.world_mut(), context_camera)
-                .expect("valid context branch")
-                .entries
-                .into_iter()
-                .map(|entry| context_text(&entry).to_owned())
-                .collect::<Vec<_>>();
-            assert_eq!(context_users, expected);
+        for branch in &fixture.branches {
+            fixture
+                .world
+                .get_mut::<TranscriptCamera>(transcript_camera)
+                .expect("transcript camera")
+                .head = Some(branch.head);
+            assert_eq!(
+                project_transcript(&mut fixture.world, transcript_camera),
+                branch.transcript
+            );
+            fixture
+                .world
+                .get_mut::<ContextCamera>(context_camera)
+                .expect("context camera")
+                .head = Some(branch.head);
+            assert_eq!(
+                project_context(&mut fixture.world, context_camera),
+                Ok(ContextDocument {
+                    entries: branch.context.clone(),
+                })
+            );
         }
     }
 
@@ -54,18 +58,18 @@ proptest! {
     fn transcript_order_is_sequence_then_id_then_kind(
         specs in proptest::collection::vec((1u8..=8u8, prompt_text(), any::<bool>()), 1..=12)
     ) {
-        let mut harness = Harness::disabled();
-        let turn = spawn_turn(&mut harness.app, harness.session, 1, None, 1);
+        let mut fixture = projection_world();
+        let turn = spawn_turn_in_world(&mut fixture.world, fixture.session, 1, None, 1);
         for (index, (_, text, assistant)) in specs.iter().enumerate() {
             if *assistant {
-                harness.app.world_mut().spawn(AssistantMessage {
+                fixture.world.spawn(AssistantMessage {
                     id: MessageId(index as u64 + 1),
                     turn,
                     sequence: Sequence(specs[index].0 as u64),
                     text: text.clone(),
                 });
             } else {
-                harness.app.world_mut().spawn(UserMessage {
+                fixture.world.spawn(UserMessage {
                     id: MessageId(index as u64 + 1),
                     turn,
                     sequence: Sequence(specs[index].0 as u64),
@@ -73,8 +77,8 @@ proptest! {
                 });
             }
         }
-        let camera = harness.app.world_mut().spawn(TranscriptCamera {
-            session: harness.session,
+        let camera = fixture.world.spawn(TranscriptCamera {
+            session: fixture.session,
             head: Some(turn),
         }).id();
         let mut expected = specs.iter().enumerate().collect::<Vec<_>>();
@@ -91,21 +95,21 @@ proptest! {
                 }
             })
             .collect::<Vec<_>>();
-        assert_eq!(project_transcript(harness.app.world_mut(), camera), expected);
+        assert_eq!(project_transcript(&mut fixture.world, camera), expected);
     }
 
     #[test]
     fn context_fact_ordering_is_stable_for_generated_fact_mixes(
         specs in proptest::collection::vec((1u8..=8u8, prompt_text(), 0u8..=4u8), 1..=12)
     ) {
-        let mut harness = Harness::disabled();
-        let turn = spawn_turn(&mut harness.app, harness.session, 1, None, 1);
+        let mut fixture = projection_world();
+        let turn = spawn_turn_in_world(&mut fixture.world, fixture.session, 1, None, 1);
         let mut expected = Vec::with_capacity(specs.len());
         for (index, (sequence, text, kind)) in specs.iter().enumerate() {
             let id = index as u64 + 1;
             let (id_key, kind_key, entry) = match kind {
                 0 => {
-                    harness.app.world_mut().spawn(UserMessage {
+                    fixture.world.spawn(UserMessage {
                         id: MessageId(id),
                         turn,
                         sequence: Sequence(*sequence as u64),
@@ -114,7 +118,7 @@ proptest! {
                     (id, 0, ContextEntry::User(text.clone()))
                 }
                 1 => {
-                    harness.app.world_mut().spawn(AssistantMessage {
+                    fixture.world.spawn(AssistantMessage {
                         id: MessageId(id),
                         turn,
                         sequence: Sequence(*sequence as u64),
@@ -123,15 +127,15 @@ proptest! {
                     (id, 1, ContextEntry::Assistant(text.clone()))
                 }
                 2 => {
-                    harness.app.world_mut().spawn(ModelChange {
+                    fixture.world.spawn(ModelChange {
                         turn,
-                        model: harness.model,
+                        model: fixture.model,
                         sequence: Sequence(*sequence as u64),
                     });
                     (0, 4, ContextEntry::ModelChange("fake-model".into()))
                 }
                 3 => {
-                    harness.app.world_mut().spawn(Compaction {
+                    fixture.world.spawn(Compaction {
                         turn,
                         summary: text.clone(),
                         sequence: Sequence(*sequence as u64),
@@ -139,7 +143,7 @@ proptest! {
                     (0, 5, ContextEntry::Compaction(text.clone()))
                 }
                 4 => {
-                    harness.app.world_mut().spawn(Recovery {
+                    fixture.world.spawn(Recovery {
                         turn,
                         text: text.clone(),
                         sequence: Sequence(*sequence as u64),
@@ -157,14 +161,14 @@ proptest! {
                 .then(left.2.cmp(&right.2))
                 .then_with(|| context_text(&left.3).cmp(context_text(&right.3)))
         });
-        let camera = harness.app.world_mut().spawn(ContextCamera {
-            agent: harness.agent,
-            session: harness.session,
+        let camera = fixture.world.spawn(ContextCamera {
+            agent: fixture.agent,
+            session: fixture.session,
             head: Some(turn),
             budget: usize::MAX,
         }).id();
         assert_eq!(
-            project_context(harness.app.world_mut(), camera),
+            project_context(&mut fixture.world, camera),
             Ok(ContextDocument {
                 entries: expected.into_iter().map(|(_, _, _, entry)| entry).collect(),
             })
@@ -176,23 +180,23 @@ proptest! {
         texts in proptest::collection::vec(prompt_text(), 1..=6),
         budget in 0u8..=64u8,
     ) {
-        let mut harness = Harness::disabled();
-        let turn = spawn_turn(&mut harness.app, harness.session, 1, None, 1);
+        let mut fixture = projection_world();
+        let turn = spawn_turn_in_world(&mut fixture.world, fixture.session, 1, None, 1);
         for (index, text) in texts.iter().enumerate() {
-            harness.app.world_mut().spawn(UserMessage {
+            fixture.world.spawn(UserMessage {
                 id: MessageId(index as u64 + 1),
                 turn,
                 sequence: Sequence(index as u64 + 2),
                 text: text.clone(),
             });
         }
-        let camera = harness.app.world_mut().spawn(ContextCamera {
-            agent: harness.agent,
-            session: harness.session,
+        let camera = fixture.world.spawn(ContextCamera {
+            agent: fixture.agent,
+            session: fixture.session,
             head: Some(turn),
             budget: budget as usize,
         }).id();
-        let entries = project_context(harness.app.world_mut(), camera)
+        let entries = project_context(&mut fixture.world, camera)
             .expect("valid budget projection")
             .entries;
         let all = texts
@@ -420,36 +424,6 @@ fn transcript_orders_failure_recovery_and_persistence_outcomes(mut harness: Harn
     );
 }
 
-fn ancestry(head: Entity, steps: &[ConversationStep]) -> Vec<&ConversationStep> {
-    let mut branch = Vec::new();
-    let mut current = Some(head);
-    while let Some(turn) = current {
-        let step = steps
-            .iter()
-            .find(|step| step.turn == turn)
-            .expect("planned turn");
-        branch.push(step);
-        current = step.parent;
-    }
-    branch.reverse();
-    branch
-}
-
-fn expected_branch_texts(head: Entity, steps: &[ConversationStep]) -> Vec<String> {
-    ancestry(head, steps)
-        .into_iter()
-        .flat_map(|step| {
-            [
-                step.text.clone(),
-                "Calling fake_tool.".into(),
-                step.text.clone(),
-                format!("Fake tool completed: {}", step.text),
-                "Fake harness completed the request.".into(),
-            ]
-        })
-        .collect()
-}
-
 fn spawn_turn(
     app: &mut App,
     session: Entity,
@@ -477,18 +451,6 @@ fn context_text(entry: &ContextEntry) -> &str {
         | ContextEntry::Recovery(text) => text,
         ContextEntry::ToolUse { input, .. } => input,
         ContextEntry::ToolOutcome { output, .. } => output,
-    }
-}
-
-fn transcript_text(row: TranscriptRow) -> String {
-    match row {
-        TranscriptRow::User(text)
-        | TranscriptRow::Assistant(text)
-        | TranscriptRow::System(text)
-        | TranscriptRow::Error(text) => text,
-        TranscriptRow::ToolUse { input, .. } => input,
-        TranscriptRow::ToolOutcome { output, .. } => output,
-        TranscriptRow::Work { .. } => "active work".into(),
     }
 }
 
@@ -592,6 +554,231 @@ fn broken_context_camera(harness: &mut Harness, broken: BrokenProjection) -> Ent
             session,
             head: Some(head),
             budget: usize::MAX,
+        })
+        .id()
+}
+
+struct ProjectionFixture {
+    world: World,
+    session: Entity,
+    agent: Entity,
+    branches: Vec<ProjectionBranch>,
+}
+
+struct ProjectionWorld {
+    world: World,
+    session: Entity,
+    agent: Entity,
+    model: Entity,
+}
+
+struct ProjectionBranch {
+    head: Entity,
+    transcript: Vec<TranscriptRow>,
+    context: Vec<ContextEntry>,
+}
+
+struct ProjectionStep {
+    turn: Entity,
+    parent: Option<Entity>,
+    text: String,
+    tool_call_id: ToolCallId,
+}
+
+fn projection_world() -> ProjectionWorld {
+    let mut world = World::new();
+    let session = world
+        .spawn(Session {
+            id: SessionId(1),
+            active_head: None,
+        })
+        .id();
+    let provider = world
+        .spawn(Provider {
+            provider_id: majin::ProviderId(1),
+        })
+        .id();
+    let model = world
+        .spawn(Model {
+            provider,
+            model_id: "fake-model".into(),
+        })
+        .id();
+    let agent = world.spawn(Agent { model }).id();
+    ProjectionWorld {
+        world,
+        session,
+        agent,
+        model,
+    }
+}
+
+fn projection_fixture(plan: &ConversationPlan) -> ProjectionFixture {
+    let ProjectionWorld {
+        mut world,
+        session,
+        agent,
+        model,
+    } = projection_world();
+    let provider = world
+        .get::<Model>(model)
+        .expect("projection model")
+        .provider;
+    let tool = world
+        .spawn(ToolDefinition {
+            tool_id: majin::ToolId(1),
+            name: "fake_tool".into(),
+            description: "Temporary fake tool capability.".into(),
+        })
+        .id();
+
+    let mut root = None;
+    let mut head = None;
+    let mut steps = Vec::with_capacity(plan.prompts.len());
+    for (index, text) in plan.prompts.iter().enumerate() {
+        if index > 0 && plan.branch_to_root.get(index - 1).copied().unwrap_or(false) {
+            head = root;
+        }
+        let parent = head;
+        let id = index as u64 + 1;
+        let base = id * 10;
+        let turn = world
+            .spawn(Turn {
+                id: TurnId(id),
+                session,
+                parent,
+                sequence: Sequence(base),
+                generation: 0,
+            })
+            .id();
+        let tool_call_id = ToolCallId(id);
+        world.spawn(UserMessage {
+            id: MessageId(base + 1),
+            turn,
+            sequence: Sequence(base + 1),
+            text: text.clone(),
+        });
+        world.spawn(AssistantMessage {
+            id: MessageId(base + 2),
+            turn,
+            sequence: Sequence(base + 2),
+            text: "Calling fake_tool.".into(),
+        });
+        let tool_use = world
+            .spawn(ToolUse {
+                id: tool_call_id,
+                turn,
+                agent,
+                tool,
+                model,
+                provider,
+                generation: 0,
+                input: text.clone(),
+                status: WorkStatus::Succeeded,
+                sequence: Sequence(base + 3),
+            })
+            .id();
+        world.spawn(ToolOutcome {
+            tool_use,
+            tool_call_id,
+            turn,
+            generation: 0,
+            output: format!("Fake tool completed: {text}"),
+            sequence: Sequence(base + 4),
+        });
+        world.spawn(AssistantMessage {
+            id: MessageId(base + 5),
+            turn,
+            sequence: Sequence(base + 5),
+            text: "Fake harness completed the request.".into(),
+        });
+        root.get_or_insert(turn);
+        head = Some(turn);
+        steps.push(ProjectionStep {
+            turn,
+            parent,
+            text: text.clone(),
+            tool_call_id,
+        });
+    }
+
+    let branches = steps
+        .iter()
+        .map(|step| {
+            let mut chain = Vec::new();
+            let mut current = Some(step.turn);
+            while let Some(turn) = current {
+                let ancestor = steps
+                    .iter()
+                    .find(|candidate| candidate.turn == turn)
+                    .expect("projection step");
+                chain.push(ancestor);
+                current = ancestor.parent;
+            }
+            chain.reverse();
+
+            let mut transcript = Vec::new();
+            let mut context = Vec::new();
+            for step in chain {
+                transcript.extend([
+                    TranscriptRow::User(step.text.clone()),
+                    TranscriptRow::Assistant("Calling fake_tool.".into()),
+                    TranscriptRow::ToolUse {
+                        tool: "fake_tool".into(),
+                        input: step.text.clone(),
+                    },
+                    TranscriptRow::ToolOutcome {
+                        tool: "fake_tool".into(),
+                        output: format!("Fake tool completed: {}", step.text),
+                    },
+                    TranscriptRow::Assistant("Fake harness completed the request.".into()),
+                ]);
+                context.extend([
+                    ContextEntry::User(step.text.clone()),
+                    ContextEntry::Assistant("Calling fake_tool.".into()),
+                    ContextEntry::ToolUse {
+                        tool_call_id: step.tool_call_id,
+                        tool: "fake_tool".into(),
+                        input: step.text.clone(),
+                    },
+                    ContextEntry::ToolOutcome {
+                        tool_call_id: step.tool_call_id,
+                        tool: "fake_tool".into(),
+                        output: format!("Fake tool completed: {}", step.text),
+                    },
+                    ContextEntry::Assistant("Fake harness completed the request.".into()),
+                ]);
+            }
+            ProjectionBranch {
+                head: step.turn,
+                transcript,
+                context,
+            }
+        })
+        .collect();
+
+    ProjectionFixture {
+        world,
+        session,
+        agent,
+        branches,
+    }
+}
+
+fn spawn_turn_in_world(
+    world: &mut World,
+    session: Entity,
+    id: u64,
+    parent: Option<Entity>,
+    sequence: u64,
+) -> Entity {
+    world
+        .spawn(Turn {
+            id: TurnId(id),
+            session,
+            parent,
+            sequence: Sequence(sequence),
+            generation: 0,
         })
         .id()
 }

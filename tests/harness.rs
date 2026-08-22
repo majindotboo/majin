@@ -12,8 +12,8 @@ use rstest::rstest;
 pub mod common;
 
 use common::{
-    ConversationPlan, Harness, apply_conversation_plan, assert_capability_graph, harness,
-    whitespace_text,
+    ConversationPlan, Harness, apply_conversation_plan_without_execution, assert_capability_graph,
+    harness, prompt_text, whitespace_text,
 };
 
 proptest! {
@@ -22,7 +22,7 @@ proptest! {
         plan in any::<ConversationPlan>()
     ) {
         let mut harness = Harness::disabled();
-        let steps = apply_conversation_plan(&mut harness, &plan);
+        let steps = apply_conversation_plan_without_execution(&mut harness, &plan);
 
         assert_eq!(harness.active_head(), steps.last().map(|step| step.turn));
         assert_eq!(harness.count::<Turn>(), plan.prompts.len());
@@ -56,7 +56,10 @@ proptest! {
     }
 
     #[test]
-    fn whitespace_prompts_are_rejected_without_creating_domain_state(text in whitespace_text()) {
+    fn generated_prompt_validation_rejects_whitespace_and_trims_text(
+        whitespace in whitespace_text(),
+        text in prompt_text(),
+    ) {
         let mut harness = Harness::disabled();
         let mut cursor = harness
             .app
@@ -66,7 +69,7 @@ proptest! {
 
         SubmitPrompt {
             session: harness.session,
-            text,
+            text: whitespace,
         }
         .apply(harness.app.world_mut());
 
@@ -83,6 +86,16 @@ proptest! {
                 failure: CommandFailure::EmptyPrompt,
             }]
         );
+
+        let turn = harness.submit(format!("  {text}  "));
+        let message = harness
+            .app
+            .world_mut()
+            .query::<&UserMessage>()
+            .iter(harness.app.world())
+            .find(|message| message.turn == turn)
+            .expect("submitted user message");
+        assert_eq!(message.text, text);
     }
 }
 
@@ -205,4 +218,3 @@ fn active_and_foreign_turn_guards_leave_the_selected_session_unchanged(mut harne
     assert_eq!(harness.active_head(), Some(active));
     assert_ne!(harness.active_head(), Some(foreign));
 }
-

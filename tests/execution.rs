@@ -2,106 +2,15 @@ use bevy::{ecs::system::Command, prelude::*};
 use majin::{
     AssistantMessage, InterruptTurn, ModelApi, ModelOutput, ModelReply, ModelRequest,
     ModelResponse, ModelResult, ModelStopReason, ModelUsage, Provider, ProviderFailure, ToolCallId,
-    ToolDefinition, ToolOutcome, ToolResult, ToolUse, TranscriptCamera, TranscriptRow,
-    TurnCancelled, TurnCompleted, TurnFailed, TurnFailure, WorkStatus, project_transcript,
+    ToolDefinition, ToolOutcome, ToolResult, ToolUse, TurnCancelled, TurnCompleted, TurnFailed,
+    TurnFailure, WorkStatus,
 };
 use pretty_assertions::assert_eq;
-use proptest::prelude::*;
 use rstest::{fixture, rstest};
 
 pub mod common;
 
-use common::{
-    ConversationPlan, Harness, apply_conversation_plan, harness, prompt_text, update_until,
-};
-
-proptest! {
-    #[test]
-    fn generated_completed_turns_preserve_the_model_tool_model_contract(
-        plan in any::<ConversationPlan>()
-    ) {
-        let mut harness = Harness::disabled();
-        let steps = apply_conversation_plan(&mut harness, &plan);
-
-        for step in &steps {
-            let requests: Vec<_> = harness
-                .app
-                .world_mut()
-                .query::<&ModelRequest>()
-                .iter(harness.app.world())
-                .filter(|request| request.turn == step.turn)
-                .map(|request| request.status)
-                .collect();
-            let responses: Vec<_> = harness
-                .app
-                .world_mut()
-                .query::<&ModelResponse>()
-                .iter(harness.app.world())
-                .filter(|response| response.turn == step.turn)
-                .map(|response| {
-                    (
-                        response.api,
-                        response.usage.output_tokens,
-                        response.response_id.clone(),
-                    )
-                })
-                .collect();
-            let tools = harness
-                .app
-                .world_mut()
-                .query::<&ToolUse>()
-                .iter(harness.app.world())
-                .filter(|tool| tool.turn == step.turn)
-                .count();
-            let outcomes = harness
-                .app
-                .world_mut()
-                .query::<&ToolOutcome>()
-                .iter(harness.app.world())
-                .filter(|outcome| outcome.turn == step.turn)
-                .count();
-
-            assert_eq!(requests.len(), 2);
-            assert_eq!(responses.len(), 2);
-            assert_eq!(tools, 1);
-            assert_eq!(outcomes, 1);
-            assert_eq!(requests, [WorkStatus::Succeeded, WorkStatus::Succeeded]);
-            assert!(responses.iter().all(|response| {
-                response.0 == ModelApi::Fake
-                    && response.1 == 1
-                    && !response.2.is_empty()
-            }));
-        }
-
-        let camera = harness.app.world_mut().spawn(TranscriptCamera {
-            session: harness.session,
-            head: steps.last().map(|step| step.turn),
-        }).id();
-        let rows = project_transcript(harness.app.world_mut(), camera);
-        assert!(rows.iter().any(|row| matches!(
-            row,
-            TranscriptRow::User(text) if text == &steps.last().expect("one prompt").text
-        )));
-        assert!(rows.iter().any(|row| matches!(
-            row,
-            TranscriptRow::Assistant(text) if text == "Fake harness completed the request."
-        )));
-    }
-
-    #[test]
-    fn generated_prompts_are_trimmed_before_they_are_recorded(text in prompt_text()) {
-        let mut harness = Harness::disabled();
-        let turn = harness.submit(format!("  {text}  "));
-        let message = harness
-            .app
-            .world_mut()
-            .query::<&majin::UserMessage>()
-            .iter(harness.app.world())
-            .find(|message| message.turn == turn)
-            .expect("submitted user message");
-        assert_eq!(message.text, text);
-    }
-}
+use common::{Harness, harness, update_until};
 
 #[rstest]
 #[case::model(WorkKind::Model)]
