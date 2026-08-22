@@ -496,6 +496,90 @@ pub struct InterruptTurn {
     pub turn: Entity,
 }
 
+impl Command for InterruptTurn {
+    type Out = ();
+
+    fn apply(self, world: &mut World) {
+        let Some(turn) = world.get::<Turn>(self.turn).cloned() else {
+            world.write_message(CommandResult::InterruptRejected {
+                turn: self.turn,
+                failure: CommandFailure::MissingTurn,
+            });
+            return;
+        };
+        let Some(session) = world.get::<Session>(turn.session) else {
+            world.write_message(CommandResult::InterruptRejected {
+                turn: self.turn,
+                failure: CommandFailure::MissingSession,
+            });
+            return;
+        };
+        if session.active_head != Some(self.turn) {
+            world.write_message(CommandResult::InterruptRejected {
+                turn: self.turn,
+                failure: CommandFailure::TurnNotActive,
+            });
+            return;
+        }
+        if turn_finished(world, self.turn) {
+            world.write_message(CommandResult::InterruptRejected {
+                turn: self.turn,
+                failure: CommandFailure::TurnFinished,
+            });
+            return;
+        }
+
+        let model_work: Vec<_> = {
+            let mut requests = world.query::<(Entity, &ModelRequest)>();
+            requests
+                .iter(world)
+                .filter(|(_, request)| {
+                    request.turn == self.turn
+                        && matches!(request.status, WorkStatus::Pending | WorkStatus::Running)
+                })
+                .map(|(entity, _)| entity)
+                .collect()
+        };
+        let tool_work: Vec<_> = {
+            let mut tool_uses = world.query::<(Entity, &ToolUse)>();
+            tool_uses
+                .iter(world)
+                .filter(|(_, tool_use)| {
+                    tool_use.turn == self.turn
+                        && matches!(tool_use.status, WorkStatus::Pending | WorkStatus::Running)
+                })
+                .map(|(entity, _)| entity)
+                .collect()
+        };
+        for work in model_work {
+            world
+                .get_mut::<ModelRequest>(work)
+                .expect("model work")
+                .status = WorkStatus::Cancelled;
+            execution::cancel_model_task(world, work);
+        }
+        for work in tool_work {
+            world.get_mut::<ToolUse>(work).expect("tool work").status = WorkStatus::Cancelled;
+            execution::cancel_tool_task(world, work);
+        }
+        let generation = {
+            let mut active_turn = world.get_mut::<Turn>(self.turn).expect("validated turn");
+            active_turn.generation += 1;
+            active_turn.generation
+        };
+        let sequence = world.resource_mut::<HarnessIds>().sequence();
+        world.spawn(TurnCancelled {
+            turn: self.turn,
+            generation,
+            sequence,
+        });
+        world.write_message(CommandResult::TurnInterrupted {
+            turn: self.turn,
+            generation,
+        });
+    }
+}
+
 pub struct SelectSession {
     pub session: Entity,
 }
@@ -506,6 +590,14 @@ impl Command for SelectSession {
     fn apply(self, world: &mut World) {
         if world.get::<Session>(self.session).is_some() {
             world.insert_resource(ActiveSession(self.session));
+            world.write_message(CommandResult::SessionSelected {
+                session: self.session,
+            });
+        } else {
+            world.write_message(CommandResult::SessionRejected {
+                session: self.session,
+                failure: CommandFailure::MissingSession,
+            });
         }
     }
 }
@@ -520,12 +612,29 @@ impl Command for SelectBranch {
 
     fn apply(self, world: &mut World) {
         let Some(turn) = world.get::<Turn>(self.head) else {
+            world.write_message(CommandResult::BranchRejected {
+                session: self.session,
+                head: self.head,
+                failure: CommandFailure::MissingTurn,
+            });
             return;
         };
-        if turn.session != self.session || world.get::<Session>(self.session).is_none() {
+        if turn.session != self.session {
+            world.write_message(CommandResult::BranchRejected {
+                session: self.session,
+                head: self.head,
+                failure: CommandFailure::TurnOutsideSession,
+            });
             return;
         }
-
+        if world.get::<Session>(self.session).is_none() {
+            world.write_message(CommandResult::BranchRejected {
+                session: self.session,
+                head: self.head,
+                failure: CommandFailure::MissingSession,
+            });
+            return;
+        }
         let sequence = world.resource_mut::<HarnessIds>().sequence();
         world
             .get_mut::<Session>(self.session)
@@ -535,6 +644,10 @@ impl Command for SelectBranch {
             session: self.session,
             head: self.head,
             sequence,
+        });
+        world.write_message(CommandResult::BranchSelected {
+            session: self.session,
+            head: self.head,
         });
     }
 }
