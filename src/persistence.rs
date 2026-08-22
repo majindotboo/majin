@@ -9,10 +9,10 @@ use bevy::prelude::*;
 
 use crate::{MajinSet, MajinStartupSet, PersistenceFailure, SessionId};
 
-mod atomic;
+mod events;
+mod log;
 mod recovery;
-use atomic::persist;
-use recovery::recover;
+mod replay;
 
 pub struct PersistencePlugin;
 
@@ -20,33 +20,9 @@ impl Plugin for PersistencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PersistenceConfig>()
             .init_resource::<PersistenceState>()
-            .register_type::<Agent>()
-            .register_type::<AgentTool>()
-            .register_type::<AssistantMessage>()
-            .register_type::<BranchSelection>()
-            .register_type::<Compaction>()
-            .register_type::<ContextCamera>()
-            .register_type::<HarnessIds>()
-            .register_type::<Model>()
-            .register_type::<ModelChange>()
-            .register_type::<ModelRequest>()
-            .register_type::<ModelResponse>()
-            .register_type::<PersistentContextCamera>()
-            .register_type::<PersistenceFailure>()
-            .register_type::<Provider>()
-            .register_type::<Recovery>()
-            .register_type::<Session>()
-            .register_type::<ToolDefinition>()
-            .register_type::<ToolOutcome>()
-            .register_type::<ToolUse>()
-            .register_type::<Turn>()
-            .register_type::<TurnCancelled>()
-            .register_type::<TurnCompleted>()
-            .register_type::<TurnFailed>()
-            .register_type::<TurnInterrupted>()
-            .register_type::<UserMessage>()
-            .add_systems(Startup, recover.in_set(crate::MajinStartupSet::Recover))
-            .add_systems(Update, persist.in_set(MajinSet::Persist));
+            .add_systems(Startup, replay::hydrate.in_set(MajinStartupSet::Hydrate))
+            .add_systems(Startup, recovery::recover.in_set(MajinStartupSet::Recover))
+            .add_systems(Update, log::persist.in_set(MajinSet::Persist));
     }
 }
 
