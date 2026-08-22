@@ -13,9 +13,13 @@ pub use camera::{
     TranscriptRow, project_context, project_transcript,
 };
 pub use harness::{
-    ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection, Compaction, HarnessPlugin,
-    MessageId, Model, ModelChange, Provider, ProviderId, Recovery, SelectBranch, SelectSession,
-    Sequence, Session, SessionId, SubmitPrompt, ToolDefinition, ToolId, Turn, TurnId, UserMessage,
+    ActiveAgent, ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection,
+    CommandFailure, CommandResult, Compaction, HarnessPlugin, InterruptTurn, MessageId, Model,
+    ModelApi, ModelChange, ModelOutput, ModelReply, ModelRequest, ModelRequestId, ModelResponse,
+    ModelResult, ModelStopReason, ModelUsage, Provider, ProviderFailure, ProviderId, Recovery,
+    RecoveryFailure, SelectBranch, SelectSession, Sequence, Session, SessionId, SubmitPrompt,
+    ToolCallId, ToolDefinition, ToolFailure, ToolId, ToolOutcome, ToolResult, ToolUse, Turn,
+    TurnCancelled, TurnCompleted, TurnFailed, TurnFailure, TurnId, UserMessage, WorkStatus,
 };
 pub use persistence::PersistencePlugin;
 pub use tui::{TerminalTranscriptViewport, TuiPlugin, TuiView};

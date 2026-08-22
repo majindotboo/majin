@@ -123,6 +123,7 @@ fn selecting_a_session_updates_the_transcript_camera() {
             session,
             parent: None,
             sequence: Sequence(1),
+            generation: 0,
         })
         .id();
     app.world_mut()

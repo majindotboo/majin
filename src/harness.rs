@@ -24,6 +24,12 @@ pub struct SessionId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TurnId(pub u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelRequestId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolCallId(pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MessageId(pub u64);
 
@@ -72,6 +78,7 @@ pub struct Turn {
     pub session: Entity,
     pub parent: Option<Entity>,
     pub sequence: Sequence,
+    pub generation: u64,
 }
 
 #[derive(Component, Debug, Clone)]
@@ -88,6 +95,139 @@ pub struct AssistantMessage {
     pub turn: Entity,
     pub sequence: Sequence,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct ModelRequest {
+    pub id: ModelRequestId,
+    pub turn: Entity,
+    pub agent: Entity,
+    pub model: Entity,
+    pub provider: Entity,
+    pub generation: u64,
+    pub previous_tool_use: Option<Entity>,
+    pub status: WorkStatus,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct ModelResponse {
+    pub request: Entity,
+    pub turn: Entity,
+    pub model: Entity,
+    pub generation: u64,
+    pub provider: Entity,
+    pub response_id: String,
+    pub api: ModelApi,
+    pub usage: ModelUsage,
+    pub stop_reason: ModelStopReason,
+    pub opaque_replay: String,
+    pub sequence: Sequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelStopReason {
+    ToolUse,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelApi {
+    Fake,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOutput {
+    pub reply: ModelReply,
+    pub assistant_content: Option<String>,
+    pub response_id: String,
+    pub api: ModelApi,
+    pub usage: ModelUsage,
+    pub stop_reason: ModelStopReason,
+    pub opaque_replay: String,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct ToolUse {
+    pub id: ToolCallId,
+    pub turn: Entity,
+    pub agent: Entity,
+    pub tool: Entity,
+    pub model: Entity,
+    pub provider: Entity,
+    pub generation: u64,
+    pub input: String,
+    pub status: WorkStatus,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct ToolOutcome {
+    pub tool_use: Entity,
+    pub tool_call_id: ToolCallId,
+    pub turn: Entity,
+    pub generation: u64,
+    pub output: String,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct TurnCompleted {
+    pub turn: Entity,
+    pub generation: u64,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct TurnCancelled {
+    pub turn: Entity,
+    pub generation: u64,
+    pub sequence: Sequence,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct TurnFailed {
+    pub turn: Entity,
+    pub generation: u64,
+    pub failure: TurnFailure,
+    pub sequence: Sequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnFailure {
+    Provider(ProviderFailure),
+    Tool(ToolFailure),
+    Recovery(RecoveryFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderFailure {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolFailure {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryFailure {
+    pub message: String,
 }
 
 #[derive(Component, Debug, Clone)]
@@ -121,8 +261,85 @@ pub struct Recovery {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ActiveSession(pub Entity);
 
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ActiveAgent(pub Entity);
+
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub enum CommandResult {
+    PromptSubmitted {
+        session: Entity,
+        turn: Entity,
+    },
+    PromptRejected {
+        session: Entity,
+        failure: CommandFailure,
+    },
+    SessionSelected {
+        session: Entity,
+    },
+    SessionRejected {
+        session: Entity,
+        failure: CommandFailure,
+    },
+    BranchSelected {
+        session: Entity,
+        head: Entity,
+    },
+    BranchRejected {
+        session: Entity,
+        head: Entity,
+        failure: CommandFailure,
+    },
+    TurnInterrupted {
+        turn: Entity,
+        generation: u64,
+    },
+    InterruptRejected {
+        turn: Entity,
+        failure: CommandFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandFailure {
+    EmptyPrompt,
+    MissingSession,
+    MissingAgent,
+    MissingTurn,
+    TurnOutsideSession,
+    TurnNotActive,
+    ActiveTurn,
+    TurnFinished,
+}
+
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct ModelResult {
+    pub session: Entity,
+    pub turn: Entity,
+    pub work: Entity,
+    pub request_id: ModelRequestId,
+    pub generation: u64,
+    pub result: Result<ModelOutput, ProviderFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelReply {
+    ToolCall { tool_id: ToolId, input: String },
+    Final { text: String },
+}
+
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    pub session: Entity,
+    pub turn: Entity,
+    pub work: Entity,
+    pub tool_call_id: ToolCallId,
+    pub generation: u64,
+    pub result: Result<String, ToolFailure>,
+}
+
 #[derive(Resource)]
-struct HarnessIds {
+pub(crate) struct HarnessIds {
     next_turn: u64,
     next_message: u64,
     next_sequence: u64,
@@ -195,6 +412,7 @@ impl Command for SubmitPrompt {
                 session: self.session,
                 parent,
                 sequence: turn_sequence,
+                generation: 0,
             })
             .id();
         world.spawn(UserMessage {
@@ -214,6 +432,10 @@ impl Command for SubmitPrompt {
             .expect("validated session")
             .active_head = Some(turn);
     }
+}
+
+pub struct InterruptTurn {
+    pub turn: Entity,
 }
 
 pub struct SelectSession {
