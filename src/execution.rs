@@ -586,6 +586,18 @@ pub(crate) fn sync_persistent_context_camera(
         .filter(|(_, camera, _)| camera.agent == agent && camera.session == session)
         .map(|(entity, _, _)| entity)
         .collect();
+    if cameras.is_empty() {
+        world.spawn((
+            ContextCamera {
+                agent,
+                session,
+                head,
+                budget: 4096,
+            },
+            PersistentContextCamera,
+        ));
+        return;
+    }
     for camera in cameras {
         world
             .get_mut::<ContextCamera>(camera)

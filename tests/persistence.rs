@@ -97,7 +97,10 @@ fn snapshot_round_trip_preserves_branches_links_ids_context_and_excludes_tui(tem
         .get::<TuiView>(view)
         .unwrap()
         .transcript_camera;
-    first.world_mut().get_mut::<TuiView>(view).unwrap().composer = "transient".into();
+    {
+        let mut view = first.world_mut().get_mut::<TuiView>(view).unwrap();
+        view.composer = "transient".into();
+    }
     first
         .world_mut()
         .get_mut::<TerminalTranscriptViewport>(transcript_camera)

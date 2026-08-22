@@ -10,7 +10,8 @@ pub(crate) use camera::project_context_for;
 
 pub use camera::{
     CameraPlugin, ContextCamera, ContextDocument, ContextEntry, PersistentContextCamera,
-    ProjectionError, TranscriptCamera, TranscriptRow, project_context, project_transcript,
+    ProjectionError, TranscriptCamera, TranscriptRow, TranscriptWork, project_context,
+    project_transcript,
 };
 pub use harness::{
     ActiveAgent, ActiveSession, Agent, AgentTool, AssistantMessage, BranchSelection,

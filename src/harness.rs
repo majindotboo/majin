@@ -703,7 +703,13 @@ impl Command for SelectSession {
             });
             return;
         }
-        if world.get::<Session>(self.session).is_some() {
+        if let Some(head) = world
+            .get::<Session>(self.session)
+            .map(|session| session.active_head)
+        {
+            if let Some(agent) = world.get_resource::<ActiveAgent>().copied() {
+                execution::sync_persistent_context_camera(world, agent.0, self.session, head);
+            }
             world.insert_resource(ActiveSession(self.session));
             world.write_message(CommandResult::SessionSelected {
                 session: self.session,
@@ -755,6 +761,14 @@ impl Command for SelectBranch {
                 session: self.session,
                 head: self.head,
                 failure: CommandFailure::MissingSession,
+            });
+            return;
+        }
+        if session_has_active_work(world, self.session) {
+            world.write_message(CommandResult::BranchRejected {
+                session: self.session,
+                head: self.head,
+                failure: CommandFailure::ActiveTurn,
             });
             return;
         }
