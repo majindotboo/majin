@@ -147,15 +147,19 @@ fn dispatch_model_requests(world: &mut World) {
             );
             continue;
         };
-        let context = match project_context_for(
-            world,
-            ContextCamera {
-                agent: request.agent,
-                session: turn.session,
-                head: Some(request.turn),
-                budget: 4096,
-            },
-        ) {
+        let Some(context_camera) = persistent_context_camera(world, request.agent, turn.session)
+        else {
+            fail_request(
+                world,
+                work,
+                &request,
+                ProviderFailure {
+                    message: "Persistent Context camera is unavailable.".into(),
+                },
+            );
+            continue;
+        };
+        let context = match project_context_for(world, context_camera) {
             Ok(context) => context,
             Err(error) => {
                 fail_request(
@@ -555,6 +559,19 @@ fn provider_executor(world: &World, request: &ModelRequest) -> Option<ProviderEx
     }
     world.get::<Provider>(request.provider)?;
     world.get::<ProviderExecutor>(request.provider).copied()
+}
+
+fn persistent_context_camera(
+    world: &mut World,
+    agent: Entity,
+    session: Entity,
+) -> Option<ContextCamera> {
+    world
+        .query::<(Entity, &ContextCamera, &PersistentContextCamera)>()
+        .iter(world)
+        .filter(|(_, camera, _)| camera.agent == agent && camera.session == session)
+        .min_by_key(|(entity, _, _)| entity.to_bits())
+        .map(|(_, camera, _)| *camera)
 }
 
 pub(crate) fn sync_persistent_context_camera(

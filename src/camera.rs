@@ -6,8 +6,8 @@ use bevy::{
 };
 
 use crate::harness::{
-    AssistantMessage, Compaction, Model, ModelChange, Recovery, Sequence, ToolDefinition,
-    ToolOutcome, ToolUse, Turn, UserMessage,
+    AssistantMessage, Compaction, Model, ModelChange, PersistenceFailure, Recovery, Sequence,
+    ToolDefinition, ToolOutcome, ToolUse, Turn, UserMessage,
 };
 
 pub struct CameraPlugin;
@@ -88,11 +88,13 @@ pub(crate) struct TranscriptProjector<'w, 's> {
     tool_uses: Query<'w, 's, (Entity, &'static ToolUse)>,
     tool_outcomes: Query<'w, 's, &'static ToolOutcome>,
     tools: Query<'w, 's, (Entity, &'static ToolDefinition)>,
+    recoveries: Query<'w, 's, &'static Recovery>,
+    persistence_failures: Query<'w, 's, &'static PersistenceFailure>,
 }
 
 impl TranscriptProjector<'_, '_> {
     pub(crate) fn project(&self, camera: &TranscriptCamera) -> Vec<TranscriptRow> {
-        project_transcript_parts(
+        let mut rows = project_transcript_parts(
             *camera,
             self.turns.iter(),
             self.users.iter(),
@@ -100,7 +102,15 @@ impl TranscriptProjector<'_, '_> {
             self.tool_uses.iter(),
             self.tool_outcomes.iter(),
             self.tools.iter(),
-        )
+        );
+        append_transcript_failures(
+            &mut rows,
+            *camera,
+            self.turns.iter(),
+            self.recoveries.iter(),
+            self.persistence_failures.iter(),
+        );
+        rows
     }
 }
 
@@ -114,8 +124,10 @@ pub fn project_transcript(world: &mut World, camera: Entity) -> Vec<TranscriptRo
     let mut tool_uses = world.query::<(Entity, &ToolUse)>();
     let mut tool_outcomes = world.query::<&ToolOutcome>();
     let mut tools = world.query::<(Entity, &ToolDefinition)>();
+    let mut recoveries = world.query::<&Recovery>();
+    let mut persistence_failures = world.query::<&PersistenceFailure>();
 
-    project_transcript_parts(
+    let mut rows = project_transcript_parts(
         camera,
         turns.iter(world),
         users.iter(world),
@@ -123,7 +135,15 @@ pub fn project_transcript(world: &mut World, camera: Entity) -> Vec<TranscriptRo
         tool_uses.iter(world),
         tool_outcomes.iter(world),
         tools.iter(world),
-    )
+    );
+    append_transcript_failures(
+        &mut rows,
+        camera,
+        turns.iter(world),
+        recoveries.iter(world),
+        persistence_failures.iter(world),
+    );
+    rows
 }
 
 pub fn project_context(
@@ -268,12 +288,17 @@ pub(crate) fn project_context_for(
             .then_with(|| context_entry_text(&left.4).cmp(context_entry_text(&right.4)))
     });
 
-    Ok(ContextDocument {
-        entries: entries
-            .into_iter()
-            .map(|(_, _, _, _, entry)| entry)
-            .collect(),
-    })
+    let mut remaining = camera.budget;
+    let mut selected = Vec::new();
+    for (_, _, _, _, entry) in entries.into_iter().rev() {
+        let size = context_entry_text(&entry).len();
+        if size <= remaining {
+            remaining -= size;
+            selected.push(entry);
+        }
+    }
+    selected.reverse();
+    Ok(ContextDocument { entries: selected })
 }
 
 fn context_entry_text(entry: &ContextEntry) -> &str {
@@ -286,6 +311,24 @@ fn context_entry_text(entry: &ContextEntry) -> &str {
         ContextEntry::ToolUse { input, .. } => input,
         ContextEntry::ToolOutcome { output, .. } => output,
     }
+}
+
+fn append_transcript_failures<'a>(
+    rows: &mut Vec<TranscriptRow>,
+    camera: TranscriptCamera,
+    turns: impl Iterator<Item = (Entity, &'a Turn)>,
+    recoveries: impl Iterator<Item = &'a Recovery>,
+    persistence_failures: impl Iterator<Item = &'a PersistenceFailure>,
+) {
+    let turns: HashMap<_, _> = turns.collect();
+    if let Ok(branch) = branch_order(&turns, camera.session, camera.head) {
+        rows.extend(
+            recoveries
+                .filter(|recovery| branch.contains_key(&recovery.turn))
+                .map(|recovery| TranscriptRow::Error(recovery.text.clone())),
+        );
+    }
+    rows.extend(persistence_failures.map(|failure| TranscriptRow::Error(failure.message.clone())));
 }
 
 fn project_transcript_parts<'a>(
@@ -366,7 +409,6 @@ fn project_transcript_parts<'a>(
         })
     }));
     items.sort_by_key(|(order, Sequence(sequence), id, kind, _)| (*order, *sequence, *id, *kind));
-
     items.into_iter().map(|(_, _, _, _, item)| item).collect()
 }
 

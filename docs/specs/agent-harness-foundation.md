@@ -2,12 +2,9 @@
 
 ## Problem
 
-Majin currently renders a fake transcript from one `TuiView` resource in `src/lib.rs`.
-Keyboard and mouse input mutate that resource directly.
-No Agent, Session, Turn, provider, tool, camera, async work, branching, or persistence model exists.
-
-The prototype proves terminal rendering and input.
-It does not provide the World-owned agent harness defined by `CONTEXT.md` and `docs/architecture.md`.
+Majin currently renders a terminal transcript through World-owned state and conceptual cameras.
+Keyboard and mouse input update TUI state and submit typed harness commands.
+The harness now owns Agent, Session, Turn, provider, tool, camera, async work, branching, and persistence state.
 
 ## Outcome
 
@@ -28,7 +25,7 @@ Provider and tool implementations remain fake but use the same capability, comma
 - Add fake asynchronous model and tool executors.
 - Add generation-based stale-result rejection and Turn interruption.
 - Add branching Sessions with parent-linked Turns and an active head.
-- Add scoped DynamicWorld persistence with debounced atomic writes and startup hydration.
+- Add versioned per-Session JSONL event logs with append writes and startup replay.
 - Gate commands behind `HarnessReady`.
 - Keep all test bodies under root `tests/`.
 
@@ -37,7 +34,7 @@ Provider and tool implementations remain fake but use the same capability, comma
 - Real provider network APIs.
 - Real filesystem or shell tools.
 - Tool approval policy or sandboxing.
-- Save migrations before the first stable format.
+- Save migrations beyond the current versioned schema.
 - Multi-agent orchestration.
 - Camera caching.
 - Compaction algorithms beyond representing compaction as a timeline fact.
@@ -46,13 +43,12 @@ Provider and tool implementations remain fake but use the same capability, comma
 ## Current System
 
 - `src/main.rs` is a thin bootstrap that calls `majin::run()`.
-- `src/lib.rs` exposes `MajinPlugin` and owns the complete prototype.
-- `MajinPlugin` registers `KeyMessage`, `MouseMessage`, `AppExit`, and one `TuiView` resource.
+- `src/lib.rs` declares modules and re-exports the public application surface.
+- `src/app.rs` owns terminal bootstrap, composition, and schedule definitions.
 - `handle_input` and `handle_mouse_input` mutate `TuiView` directly.
 - `draw` renders `TuiView.transcript` and `TuiView.composer` through `RatatuiContext`.
 - `tests/agent_ui.rs` proves prompt submission and mouse scrolling through public World state.
 - Bevy uses minimal terminal features.
-- `bevy_world_serialization` is not enabled yet.
 - Repository rules require root integration tests and forbid test modules under `src/`.
 
 ## Implementation Approach
@@ -205,17 +201,14 @@ Transcript and context cameras walk parent links from the selected head.
 
 ### 7. Persistence and hydration
 
-Enable Bevy `bevy_world_serialization` and its serialization support.
 Do not enable Bevy spatial camera or window rendering features.
 
-Add a persistent marker or equivalent DynamicWorldBuilder filter for domain entities.
-Register every persisted component and resource for reflection and serialization.
-Derive or implement entity remapping for persisted `Entity` fields.
+Define an explicit versioned persistence record schema. Persist stable domain IDs and references, never Bevy Entity values or Rust type paths.
 
 Persist:
 
 - Agent domain state and selected Model reference.
-- Sessions, Turns, branch heads, normalized facts, work identity, outcomes, and stable ID allocator.
+- Sessions, Turns, branch heads, normalized facts, work identity, and outcomes.
 - Provider and tool identity only when required to reconnect persisted references.
 - Agent ContextCamera state when it affects future provider context.
 
@@ -228,15 +221,15 @@ Do not persist:
 - Derived projections.
 - Runtime-only resources.
 
-Use one debounced writer.
-Any change to persistent state marks persistence dirty.
-Write to a temporary file and atomically replace the active snapshot.
+Use one debounced writer per Session log.
+Any change to persistent state marks that Session dirty.
+Append complete JSONL records and sync them; recover an incomplete final record on startup.
 
 Startup order:
 
 1. Register capabilities and reflected types.
-2. Load the scoped DynamicWorld when present.
-3. Remap entity relationships.
+2. Discover and replay Session logs when present.
+3. Rebuild runtime Entity relationships from stable domain IDs.
 4. Convert orphaned in-flight work into TurnInterrupted outcomes.
 5. Rebuild transient links and selected UI state.
 6. Set `HarnessReady`.
@@ -287,8 +280,8 @@ Ratatui renders temporary transcript rows returned by the camera projection.
 - Command tests cover valid targets, invalid targets, empty prompts, interruption, stale generations, branch selection, and readiness gating.
 - Camera tests build branched Sessions in World and assert deterministic transcript and context documents.
 - Async tests use deterministic fake executors and prove model-tool-model sequencing.
-- Persistence tests use a temporary directory, round-trip a scoped snapshot, assert entity remapping, and simulate interrupted work.
-- Failure tests corrupt or block snapshot replacement and assert prior-file preservation plus visible recovery failure.
+- Persistence tests use a temporary directory, round-trip one or more Session logs, assert runtime entity reconstruction, and simulate interrupted work.
+- Failure tests corrupt or block append writes and assert prior-file preservation plus visible recovery failure.
 - Run one Cargo command at a time:
   - `cargo fmt --check`
   - `cargo clippy --all-targets --all-features -- -D warnings`
@@ -299,13 +292,13 @@ Ratatui renders temporary transcript rows returned by the camera projection.
 
 ## Risks and Constraints
 
-- Scoped DynamicWorld persistence requires complete reflection registration and entity remapping.
-- Entity links outside the serialized scope become invalid.
-- Debounced persistence can lose the final unflushed changes during process termination.
+- Session log replay requires complete reference validation before World mutation.
+- A malformed complete record blocks only its Session log.
+- A crash can leave an incomplete final record, which recovery truncates before replay.
 - Branch projection must detect malformed parent cycles and missing parents.
 - Provider opaque replay artifacts can become incompatible after a model change.
 - Tool authorization is intentionally unresolved and must not become an implicit permanent allow policy.
-- The internal save format is disposable during development.
+- The event schema is versioned and requires explicit migrations.
 
 ## Delivery Plan
 
@@ -315,7 +308,7 @@ Goal: establish plugins, modules, schedule sets, and test seams without changing
 
 Verification: existing composer and mouse tests pass through `MajinPlugin`.
 
-Completion: prototype behavior runs through the new plugin boundaries.
+Completion: application behavior runs through the plugin boundaries.
 
 ### Phase 2: World-owned Session flow
 
@@ -335,7 +328,7 @@ Completion: one complete fake Turn exercises the real orchestration boundaries.
 
 ### Phase 4: Persistence
 
-Goal: add scoped DynamicWorld snapshots, debounced atomic writes, hydration, readiness gating, and interrupted recovery.
+Goal: add versioned per-Session JSONL logs, debounced append writes, replay, readiness gating, and interrupted recovery.
 
 Verification: round-trip, remapping, recovery, and failure-preservation tests pass.
 
